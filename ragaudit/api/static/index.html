@@ -1,0 +1,489 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Audit Report Assistant</title>
+<style>
+:root {
+  --bg: #fbfbfa; --panel: #ffffff; --ink: #1a1a19; --muted: #6b6b66;
+  --line: #e4e4e0; --accent: #2a6f5f; --accent-soft: #e8f2ef;
+  --warn: #8a6a1f; --warn-soft: #fdf6e3; --crit: #a33; --crit-soft: #fdeeee;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #17181a; --panel: #1f2023; --ink: #e8e8e4; --muted: #9a9a93;
+    --line: #32343a; --accent: #6fcab0; --accent-soft: #1d2d2a;
+    --warn: #d9b24c; --warn-soft: #2b2518; --crit: #e88; --crit-soft: #2e1f1f;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  display: flex; flex-direction: column; height: 100vh;
+}
+header {
+  border-bottom: 1px solid var(--line); padding: 14px 20px;
+  display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  background: var(--panel);
+}
+h1 { font-size: 16px; margin: 0; font-weight: 600; letter-spacing: -0.01em; }
+.sub { color: var(--muted); font-size: 12.5px; }
+.spacer { flex: 1; }
+.pill {
+  font-size: 11.5px; padding: 3px 9px; border-radius: 999px;
+  border: 1px solid var(--line); color: var(--muted); white-space: nowrap;
+}
+.pill.ok { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+.pill.bad { color: var(--crit); border-color: var(--crit); background: var(--crit-soft); }
+
+main { flex: 1; display: flex; min-height: 0; }
+#log { flex: 1; overflow-y: auto; padding: 20px; scroll-behavior: smooth; }
+aside {
+  width: 290px; border-left: 1px solid var(--line); background: var(--panel);
+  overflow-y: auto; padding: 16px 18px; font-size: 13px;
+}
+aside h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .07em;
+  color: var(--muted); margin: 0 0 8px; font-weight: 600; }
+aside section { margin-bottom: 22px; }
+.ex {
+  display: block; width: 100%; text-align: left; margin-bottom: 6px;
+  padding: 8px 10px; border: 1px solid var(--line); border-radius: 7px;
+  background: transparent; color: var(--ink); cursor: pointer;
+  font: inherit; font-size: 12.5px; line-height: 1.4;
+}
+.ex:hover { border-color: var(--accent); background: var(--accent-soft); }
+.ex small { display: block; color: var(--muted); font-size: 11px; margin-top: 2px; }
+
+.turn { max-width: 820px; margin: 0 auto 26px; }
+.q {
+  font-weight: 600; margin-bottom: 10px; display: flex; gap: 9px; align-items: baseline;
+}
+.q::before { content: "›"; color: var(--accent); font-size: 17px; }
+.a { white-space: pre-wrap; }
+.meta { display: flex; gap: 7px; flex-wrap: wrap; margin: 10px 0; align-items: center; }
+.tag {
+  font-size: 11px; padding: 2px 8px; border-radius: 5px;
+  background: var(--accent-soft); color: var(--accent); font-family: var(--mono);
+}
+.tag.route-structured { background: var(--accent-soft); color: var(--accent); }
+.tag.route-narrative  { background: #e9eef7; color: #3a5a9a; }
+.tag.route-hybrid     { background: var(--warn-soft); color: var(--warn); }
+@media (prefers-color-scheme: dark) { .tag.route-narrative { background: #1e2740; color: #8fb0e8; } }
+.tag.flag { background: var(--warn-soft); color: var(--warn); }
+.tag.flag.danger { background: var(--crit-soft); color: var(--crit); }
+.tag.plain { background: transparent; color: var(--muted); border: 1px solid var(--line); }
+
+.cites { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px; }
+.cites h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--muted); margin: 0 0 7px; font-weight: 600; }
+.cite { margin-bottom: 9px; padding-left: 11px; border-left: 2px solid var(--accent); }
+.cite .src { font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
+.cite .quote { font-size: 13.5px; margin-top: 2px; }
+.figs { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+.fig {
+  font-family: var(--mono); font-size: 11px; padding: 3px 7px;
+  border: 1px dashed var(--line); border-radius: 5px; color: var(--muted);
+}
+.fig.has { border-style: solid; border-color: var(--accent); color: var(--accent); }
+
+footer { border-top: 1px solid var(--line); padding: 12px 20px; background: var(--panel); }
+form { max-width: 820px; margin: 0 auto; display: flex; gap: 9px; }
+input[type=text] {
+  flex: 1; padding: 11px 13px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--bg); color: var(--ink); font: inherit;
+}
+input[type=text]:focus { outline: none; border-color: var(--accent); }
+button.send {
+  padding: 11px 20px; border-radius: 8px; border: none; cursor: pointer;
+  background: var(--accent); color: #fff; font: inherit; font-weight: 500;
+}
+button.send:disabled { opacity: .5; cursor: default; }
+.thinking { color: var(--muted); font-style: italic; }
+.empty { color: var(--muted); max-width: 820px; margin: 40px auto; text-align: center; }
+.tag.route-agent    { background: #efe9f7; color: #6a4ca0; }
+.tag.route-chitchat { background: transparent; color: var(--muted); border: 1px solid var(--line); }
+@media (prefers-color-scheme: dark) { .tag.route-agent { background: #241d33; color: #b79ae8; } }
+
+/* blocks */
+.block { margin: 12px 0; }
+.btitle { font-size: 12.5px; font-weight: 600; color: var(--muted); margin-bottom: 6px; }
+.chart { width: 100%; max-width: 620px; height: auto; display: block; }
+.axlab { font-size: 10px; fill: var(--muted); }
+.legend { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 6px; font-size: 12px; color: var(--muted); }
+.lk { display: inline-flex; align-items: center; gap: 5px; }
+.lk i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+.donutrow { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.tablewrap { overflow-x: auto; }
+table.dt { border-collapse: collapse; font-size: 13px; width: 100%; }
+table.dt th, table.dt td { border: 1px solid var(--line); padding: 5px 9px; text-align: left; }
+table.dt thead th { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+table.dt .rowlabel { background: var(--bg); font-weight: 600; }
+.metric { display: inline-block; border: 1px solid var(--line); border-radius: 10px; padding: 12px 18px; }
+.metric .mval { font-size: 26px; font-weight: 700; color: var(--accent); }
+.metric .mlabel { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.metric .mdetail { font-size: 11.5px; color: var(--muted); margin-top: 3px; font-family: var(--mono); }
+.note { border-left: 3px solid var(--line); padding: 8px 12px; font-size: 13.5px; border-radius: 0 6px 6px 0; }
+.note-warning, .note-caution { border-left-color: var(--warn); background: var(--warn-soft); }
+.figimg img { max-height: 120px; border: 1px solid var(--line); border-radius: 6px; }
+.figimg { display: inline-block; }
+.steps { margin: 10px 0; font-size: 12.5px; }
+.steps summary { cursor: pointer; color: var(--muted); }
+.steps ol { margin: 6px 0 0; padding-left: 20px; color: var(--ink); }
+.steps li { margin-bottom: 3px; }
+.steps code { background: var(--accent-soft); color: var(--accent); padding: 1px 5px; border-radius: 4px; font-size: 11.5px; }
+.stsum { color: var(--muted); }
+.sterr { color: var(--crit); }
+@media (max-width: 760px) { aside { display: none; } }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>Audit Report Assistant</h1>
+    <div class="sub">Grounded question answering over cybersecurity audit reports</div>
+  </div>
+  <div class="spacer"></div>
+  <span class="pill" id="st-index">index …</span>
+  <span class="pill" id="st-llm">llm …</span>
+</header>
+
+<main>
+  <div id="log">
+    <div class="empty" id="empty">
+      Ask a question about the indexed reports.<br>
+      Try one of the examples on the right.
+    </div>
+  </div>
+  <aside>
+    <section>
+      <h2>Scope</h2>
+      <select id="scope" style="width:100%;padding:7px;border-radius:6px;border:1px solid var(--line);background:var(--bg);color:var(--ink);font:inherit;font-size:13px">
+        <option value="">All reports</option>
+      </select>
+    </section>
+    <section>
+      <h2>Structured &rarr; SQL</h2>
+      <button class="ex" data-q="How many high-severity findings are still open?">How many high-severity findings are still open?<small>exact count, no model</small></button>
+      <button class="ex" data-q="Are all findings closed?">Are all findings closed?<small>counterexample search</small></button>
+      <button class="ex" data-q="Which findings cite CWE-284?">Which findings cite CWE-284?<small>identifier lookup</small></button>
+    </section>
+    <section>
+      <h2>Narrative &rarr; retrieval</h2>
+      <button class="ex" data-q="What access control weaknesses were identified?">What access control weaknesses were identified?<small>open-ended prose answer</small></button>
+      <button class="ex" data-q="What remediation was recommended for the token API issue?">What remediation was recommended for the token API?<small>cites the recommendation</small></button>
+      <button class="ex" data-q="Was the database server patched?">Was the database server patched?<small>should abstain honestly</small></button>
+    </section>
+    <section>
+      <h2>Figures &amp; follow-up</h2>
+      <button class="ex" data-q="Show me the proof of concept for the access control finding">Show me the proof of concept<small>joins figures by finding id</small></button>
+      <button class="ex" data-q="Tell me more about it">Tell me more about it<small>uses conversation history</small></button>
+    </section>
+  </aside>
+</main>
+
+<footer>
+  <form id="f">
+    <input type="text" id="q" placeholder="Ask about the reports…" autocomplete="off" autofocus>
+    <button class="send" id="send" type="submit">Ask</button>
+  </form>
+</footer>
+
+<script>
+const log = document.getElementById('log');
+const form = document.getElementById('f');
+const input = document.getElementById('q');
+const sendBtn = document.getElementById('send');
+const scopeSel = document.getElementById('scope');
+let sessionId = null;
+
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+}
+
+async function boot() {
+  try {
+    const r = await fetch('/readyz');
+    const d = await r.json();
+    const vectors = d.checks?.index_vectors;
+    const idx = document.getElementById('st-index');
+    idx.textContent = typeof vectors === 'number' ? `${vectors} chunks indexed` : 'index unavailable';
+    idx.className = 'pill ' + (typeof vectors === 'number' && vectors > 0 ? 'ok' : 'bad');
+    const llm = document.getElementById('st-llm');
+    llm.textContent = d.checks?.llm_reachable ? 'llm ready' : 'llm offline';
+    llm.className = 'pill ' + (d.checks?.llm_reachable ? 'ok' : 'bad');
+  } catch { /* status is cosmetic; the app still works */ }
+
+  try {
+    const d = await (await fetch('/reports')).json();
+    for (const rep of d.reports || []) {
+      const o = document.createElement('option');
+      o.value = rep.report_id;
+      o.textContent = `${rep.report_id} — ${(rep.title || '').slice(0, 34)}`;
+      scopeSel.appendChild(o);
+    }
+  } catch { /* scope selector is optional */ }
+}
+
+function render(question, data) {
+  const turn = document.createElement('div');
+  turn.className = 'turn';
+
+  const tags = [`<span class="tag route-${esc(data.route)}">${esc(data.route)}</span>`];
+  if (data.abstained) tags.push('<span class="tag flag">abstained</span>');
+  for (const f of data.review_flags || []) {
+    const danger = /citation_not_in_evidence|quote_not_in_chunk|injection/.test(f);
+    const short = f.length > 46 ? f.slice(0, 46) + '…' : f;
+    tags.push(`<span class="tag flag${danger ? ' danger' : ''}" title="${esc(f)}">${esc(short)}</span>`);
+  }
+  tags.push(`<span class="tag plain">${(data.latency_s ?? 0).toFixed(2)}s</span>`);
+  if (data.model) tags.push(`<span class="tag plain">${esc(data.model)}</span>`);
+
+  let html = `<div class="q">${esc(question)}</div>`;
+  html += `<div class="meta">${tags.join('')}</div>`;
+  html += `<div class="a">${esc(data.answer)}</div>`;
+
+  for (const block of data.blocks || []) {
+    html += renderBlock(block);
+  }
+
+  if (data.steps?.length) {
+    html += renderSteps(data.steps);
+  }
+
+  if (data.citations?.length) {
+    html += '<div class="cites"><h3>Evidence</h3>';
+    for (const c of data.citations.slice(0, 8)) {
+      html += `<div class="cite"><div class="src">${esc(c.report_id)} · ${esc(c.field_path)}</div>`;
+      if (c.quote) html += `<div class="quote">“${esc(c.quote)}”</div>`;
+      html += '</div>';
+    }
+    html += '</div>';
+  }
+
+  if (data.figures?.length) {
+    html += '<div class="figs">';
+    for (const f of data.figures.slice(0, 12)) {
+      if (f.available && f.url) {
+        html += `<a class="figimg" href="${esc(f.url)}" target="_blank" rel="noopener">` +
+                `<img src="${esc(f.url)}" alt="${esc(f.token)}" loading="lazy"></a>`;
+      } else {
+        html += `<span class="fig" title="referenced by the report, image not staged">${esc(f.token)}</span>`;
+      }
+    }
+    html += '</div>';
+  }
+
+  turn.innerHTML = html;
+  log.appendChild(turn);
+  log.scrollTop = log.scrollHeight;
+}
+
+// -- block rendering (all data is server-owned; still escape every string) --
+
+const PALETTE = ['#2a6f5f', '#3a5a9a', '#8a6a1f', '#a33', '#5a7', '#76c', '#c86', '#596'];
+
+function renderBlock(b) {
+  try {
+    if (b.kind === 'chart') return renderChart(b);
+    if (b.kind === 'table') return renderTable(b);
+    if (b.kind === 'metric') return renderMetric(b);
+    if (b.kind === 'comparison') return renderComparison(b);
+    if (b.kind === 'note') return renderNote(b);
+    if (b.kind === 'figures') return '';  // figures rendered from data.figures
+  } catch (e) { /* a bad block must not break the turn */ }
+  return '';
+}
+
+function renderNote(b) {
+  return `<div class="block note note-${esc(b.tone || 'info')}">${esc(b.text)}</div>`;
+}
+
+function renderMetric(b) {
+  const v = typeof b.value === 'number' ? b.value : esc(b.value);
+  return `<div class="block metric"><div class="mval">${v}</div>` +
+         `<div class="mlabel">${esc(b.label)}</div>` +
+         (b.detail ? `<div class="mdetail">${esc(b.detail)}</div>` : '') + '</div>';
+}
+
+function renderTable(b) {
+  let h = `<div class="block"><div class="btitle">${esc(b.title || '')}</div>` +
+          '<div class="tablewrap"><table class="dt"><thead><tr>';
+  for (const c of b.columns) h += `<th>${esc(c)}</th>`;
+  h += '</tr></thead><tbody>';
+  for (const row of b.rows) {
+    h += '<tr>' + row.map(cell => `<td>${esc(cell)}</td>`).join('') + '</tr>';
+  }
+  return h + '</tbody></table></div></div>';
+}
+
+function renderComparison(b) {
+  let h = `<div class="block"><div class="btitle">${esc(b.title || '')}</div>` +
+          '<div class="tablewrap"><table class="dt"><thead><tr><th></th>';
+  for (const c of b.columns) h += `<th>${esc(c)}</th>`;
+  h += '</tr></thead><tbody>';
+  for (const row of b.rows) {
+    h += `<tr><th class="rowlabel">${esc(row.label)}</th>` +
+         row.values.map(v => `<td>${esc(v)}</td>`).join('') + '</tr>';
+  }
+  return h + '</tbody></table></div></div>';
+}
+
+function renderChart(b) {
+  const W = 620, H = 240, padL = 44, padB = 54, padT = 16, padR = 12;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+  const groups = b.x.length;
+  const maxV = Math.max(1, ...b.series.flatMap(s => s.values.map(v => Math.abs(v))));
+  const stacked = b.chart === 'stacked_bar';
+
+  let svg = `<svg viewBox="0 0 ${W} ${H}" class="chart" role="img" aria-label="${esc(b.title || 'chart')}">`;
+  // y gridlines + labels
+  const ticks = 4;
+  for (let i = 0; i <= ticks; i++) {
+    const y = padT + plotH - (plotH * i / ticks);
+    const val = Math.round(maxV * i / ticks);
+    svg += `<line x1="${padL}" y1="${y}" x2="${W - padR}" y2="${y}" stroke="var(--line)" stroke-width="1"/>`;
+    svg += `<text x="${padL - 6}" y="${y + 3}" text-anchor="end" class="axlab">${val}</text>`;
+  }
+  const gW = plotW / groups;
+
+  if (b.chart === 'donut') {
+    return renderDonut(b);
+  }
+
+  if (b.chart === 'line') {
+    b.series.forEach((s, si) => {
+      const pts = s.values.map((v, i) => {
+        const x = padL + gW * i + gW / 2;
+        const y = padT + plotH - (plotH * v / maxV);
+        return `${x},${y}`;
+      }).join(' ');
+      svg += `<polyline points="${pts}" fill="none" stroke="${PALETTE[si % PALETTE.length]}" stroke-width="2"/>`;
+    });
+  } else {
+    // bar / stacked_bar
+    const barW = stacked ? gW * 0.55 : (gW * 0.7) / b.series.length;
+    for (let i = 0; i < groups; i++) {
+      let stackTop = padT + plotH;
+      b.series.forEach((s, si) => {
+        const v = s.values[i] || 0;
+        const hgt = plotH * Math.abs(v) / maxV;
+        let x, y;
+        if (stacked) {
+          x = padL + gW * i + (gW - barW) / 2;
+          y = stackTop - hgt;
+          stackTop = y;
+        } else {
+          x = padL + gW * i + gW * 0.15 + si * barW;
+          y = padT + plotH - hgt;
+        }
+        svg += `<rect x="${x}" y="${y}" width="${barW}" height="${hgt}" fill="${PALETTE[si % PALETTE.length]}" rx="2"><title>${esc(s.name)}: ${v}</title></rect>`;
+      });
+    }
+  }
+  // x labels
+  for (let i = 0; i < groups; i++) {
+    const x = padL + gW * i + gW / 2;
+    svg += `<text x="${x}" y="${H - padB + 16}" text-anchor="middle" class="axlab">${esc(trunc(b.x[i], 10))}</text>`;
+  }
+  svg += '</svg>';
+
+  const legend = b.series.length > 1
+    ? '<div class="legend">' + b.series.map((s, si) =>
+        `<span class="lk"><i style="background:${PALETTE[si % PALETTE.length]}"></i>${esc(s.name)}</span>`).join('') + '</div>'
+    : '';
+  return `<div class="block"><div class="btitle">${esc(b.title || '')}</div>${svg}${legend}</div>`;
+}
+
+function renderDonut(b) {
+  const vals = b.series[0].values, labels = b.x;
+  const total = vals.reduce((a, v) => a + Math.abs(v), 0) || 1;
+  const cx = 110, cy = 110, r = 86, rin = 52;
+  let a0 = -Math.PI / 2, svg = `<svg viewBox="0 0 320 220" class="chart" role="img" aria-label="${esc(b.title || 'chart')}">`;
+  vals.forEach((v, i) => {
+    const frac = Math.abs(v) / total, a1 = a0 + frac * 2 * Math.PI;
+    const x0 = cx + r * Math.cos(a0), y0 = cy + r * Math.sin(a0);
+    const x1 = cx + r * Math.cos(a1), y1 = cy + r * Math.sin(a1);
+    const xi0 = cx + rin * Math.cos(a1), yi0 = cy + rin * Math.sin(a1);
+    const xi1 = cx + rin * Math.cos(a0), yi1 = cy + rin * Math.sin(a0);
+    const large = frac > 0.5 ? 1 : 0;
+    svg += `<path d="M${x0} ${y0} A${r} ${r} 0 ${large} 1 ${x1} ${y1} L${xi0} ${yi0} A${rin} ${rin} 0 ${large} 0 ${xi1} ${yi1} Z" fill="${PALETTE[i % PALETTE.length]}"><title>${esc(labels[i])}: ${v}</title></path>`;
+    a0 = a1;
+  });
+  svg += '</svg>';
+  const legend = '<div class="legend">' + labels.map((l, i) =>
+    `<span class="lk"><i style="background:${PALETTE[i % PALETTE.length]}"></i>${esc(l)} (${vals[i]})</span>`).join('') + '</div>';
+  return `<div class="block"><div class="btitle">${esc(b.title || '')}</div><div class="donutrow">${svg}${legend}</div></div>`;
+}
+
+function renderSteps(steps) {
+  let h = `<details class="steps"><summary>${steps.length} tool call${steps.length !== 1 ? 's' : ''}</summary><ol>`;
+  for (const s of steps) {
+    const err = s.error ? ` <span class="sterr">✗ ${esc(trunc(s.error, 60))}</span>` : '';
+    const args = Object.keys(s.arguments || {}).length ? ' ' + esc(JSON.stringify(s.arguments)) : '';
+    h += `<li><code>${esc(s.tool)}</code>${args} <span class="stsum">→ ${esc(trunc(s.summary, 50))}</span>${err}</li>`;
+  }
+  return h + '</ol></details>';
+}
+
+function trunc(s, n) { s = String(s ?? ''); return s.length > n ? s.slice(0, n) + '…' : s; }
+
+async function ask(question) {
+  document.getElementById('empty')?.remove();
+  sendBtn.disabled = true;
+
+  const pending = document.createElement('div');
+  pending.className = 'turn';
+  pending.innerHTML = `<div class="q">${esc(question)}</div><div class="thinking">thinking…</div>`;
+  log.appendChild(pending);
+  log.scrollTop = log.scrollHeight;
+
+  try {
+    const body = { question, session_id: sessionId };
+    if (scopeSel.value) body.report_ids = [scopeSel.value];
+    const res = await fetch('/ask', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    pending.remove();
+    if (!res.ok) {
+      render(question, {
+        answer: data.detail || `Request failed (${res.status}).`,
+        route: 'error', review_flags: [], citations: [], figures: [], latency_s: 0,
+      });
+      return;
+    }
+    sessionId = data.session_id;
+    render(question, data);
+  } catch (err) {
+    pending.remove();
+    render(question, {
+      answer: 'Could not reach the server. Is `ragaudit serve` running?',
+      route: 'error', review_flags: [], citations: [], figures: [], latency_s: 0,
+    });
+  } finally {
+    sendBtn.disabled = false;
+    input.focus();
+  }
+}
+
+form.addEventListener('submit', e => {
+  e.preventDefault();
+  const q = input.value.trim();
+  if (!q) return;
+  input.value = '';
+  ask(q);
+});
+
+for (const btn of document.querySelectorAll('.ex')) {
+  btn.addEventListener('click', () => ask(btn.dataset.q));
+}
+
+boot();
+</script>
+</body>
+</html>
