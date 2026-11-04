@@ -18,14 +18,20 @@ from typing import Any
 from ragaudit.agent.coerce import scoped_report_ids, as_str, bounded_limit, resolve_report_ids
 from ragaudit.agent.registry import ToolContext, ToolError, ToolGroup, ToolRegistry, ToolResult
 
-#: How much of each chunk is shown to the model, and registered as citable.
-#: The ledger stores exactly this slice, so a quote from beyond it cannot
-#: verify — which is correct, the model never saw beyond it.
-_SHOWN = 600
+#: How much of each chunk the model is shown inside the tool loop. Search
+#: results are a list, so each passage is capped; get_finding_text is a
+#: targeted read of one finding and shows it whole. A chunk is at most
+#: ~420 tokens (chunk_max_tokens), roughly 2,000 characters plus its header,
+#: so _FULL always covers it. (Previously everything was cut at 600
+#: characters: in a real run on 2-report.json the model never saw any
+#: recommendation or root cause during the loop -- not even through
+#: get_finding_text, whose description promises the full text.)
+_SHOWN = 1400
+_FULL = 4000
 
 
-def _register_and_show(ctx: ToolContext, chunk, retriever: str) -> dict[str, Any]:
-    shown = chunk.quotable_text[:_SHOWN]
+def _register_and_show(ctx: ToolContext, chunk, retriever: str, limit: int = _SHOWN) -> dict[str, Any]:
+    shown = chunk.quotable_text[:limit]
     if ctx.ledger is not None:
         ctx.ledger.register(chunk, shown_text=shown, step=ctx.current_step, retriever=retriever)
     return {
@@ -34,7 +40,7 @@ def _register_and_show(ctx: ToolContext, chunk, retriever: str) -> dict[str, Any
         "finding_id": chunk.finding_id,
         "field": chunk.field_path,
         "text": shown,
-        "truncated": len(chunk.quotable_text) > _SHOWN,
+        "truncated": len(chunk.quotable_text) > limit,
     }
 
 
@@ -43,7 +49,9 @@ def _search_reports(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     if not query:
         raise ToolError("query is required")
     report_ids = scoped_report_ids(ctx, args)
-    top_k = bounded_limit(args.get("top_k"), default=8, maximum=20)
+    # 6 passages x 1,400 chars keeps a search result well inside the agent's
+    # prompt budget while showing most findings whole.
+    top_k = bounded_limit(args.get("top_k"), default=6, maximum=12)
 
     hits = ctx.retriever.retrieve(query, report_ids=report_ids, top_k=top_k)
     passages = [_register_and_show(ctx, h.chunk, h.retriever) for h in hits]
@@ -93,12 +101,15 @@ def _get_finding_text(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
         raise ToolError("finding_id is required")
     report_ids = scoped_report_ids(ctx, args)
 
-    rows = ctx.catalog.all_chunks(report_ids=report_ids)
-    matching = [r for r in rows if r["finding_id"] == fid]
+    matching = ctx.catalog.chunks_for_finding(fid, report_ids)
+    if not matching:
+        # Tolerate case differences ("obs-03" vs "OBS-03") via the findings table.
+        for f in ctx.catalog.findings_by_id(fid, report_ids):
+            matching.extend(ctx.catalog.chunks_for_finding(f.finding_id, [f.report_id]))
     if not matching:
         raise ToolError(f"no indexed text for finding '{fid}'")
 
-    passages = [_register_and_show(ctx, _row_to_chunk(r), "finding_text") for r in matching]
+    passages = [_register_and_show(ctx, _row_to_chunk(r), "finding_text", limit=_FULL) for r in matching]
     return ToolResult(content={"finding_id": fid, "passages": passages, "count": len(passages)})
 
 

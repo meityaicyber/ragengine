@@ -62,17 +62,39 @@ def _query_findings(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     limit = bounded_limit(args.get("limit"), default=25, maximum=100)
     total = ctx.catalog.count_findings(**filters)
     rows = ctx.catalog.findings(**filters, limit=limit)
-    return ToolResult(content={
-        "findings": [_finding_brief(f) for f in rows],
-        "returned": len(rows),
-        "total": total,
-        "truncated": total > len(rows),
-    })
+    briefs = [_finding_brief(f) for f in rows]
+    return ToolResult(
+        content={
+            "findings": briefs,
+            "returned": len(rows),
+            "total": total,
+            "truncated": total > len(rows),
+            "filters": _describe(filters),
+        },
+        blocks=[{"kind": "table", "title": f"Findings ({len(rows)} of {total})",
+                 "columns": ["report_id", "finding_id", "title", "severity", "status", "cwe"],
+                 "rows": [[b["report_id"], b["finding_id"], b["title"], b["severity"], b["status"],
+                           ", ".join(b["cwe_ids"])] for b in briefs]}] if briefs else [],
+    )
+
+
+#: A count this small also returns the findings themselves. Whether the user
+#: asked "how many" or "which", the answer can name them; nothing has to guess
+#: from the wording which of the two was meant.
+_COUNT_LISTS_UP_TO = 15
 
 
 def _count_findings(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     filters = _filters(ctx, args)
-    return ToolResult(content={"count": ctx.catalog.count_findings(**filters), "filters": _describe(filters)})
+    count = ctx.catalog.count_findings(**filters)
+    content: dict[str, Any] = {"count": count, "filters": _describe(filters)}
+    if 0 < count <= _COUNT_LISTS_UP_TO:
+        rows = ctx.catalog.findings(**filters, limit=_COUNT_LISTS_UP_TO)
+        content["findings"] = [
+            {k: b[k] for k in ("report_id", "finding_id", "title", "severity", "status")}
+            for b in (_finding_brief(f) for f in rows)
+        ]
+    return ToolResult(content=content)
 
 
 def _aggregate_findings(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
@@ -153,7 +175,7 @@ def _get_finding(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     if not fid:
         raise ToolError("finding_id is required")
     report_ids = scoped_report_ids(ctx, args)
-    matches = [f for f in ctx.catalog.findings(report_ids=report_ids) if f.finding_id == fid]
+    matches = ctx.catalog.findings_by_id(fid, report_ids)
     if not matches:
         raise ToolError(f"no finding '{fid}'" + (f" in {report_ids}" if report_ids else " in any report"))
     if len(matches) > 1:
@@ -184,7 +206,7 @@ _REPORT_SCOPE = {
 _FILTERS = {
     **_REPORT_SCOPE,
     "severity": {"type": "string", "enum": ["Critical", "High", "Medium", "Low", "Informational"]},
-    "status": {"type": "string", "enum": ["Open", "Closed", "In Progress", "Risk Accepted"]},
+    "status": {"type": "string", "enum": ["Open", "Closed", "Partially Remediated", "In Progress", "Risk Accepted"]},
     "cwe": {"type": "string", "description": "CWE id, e.g. CWE-284"},
     "cve": {"type": "string", "description": "CVE id"},
 }

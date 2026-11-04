@@ -165,21 +165,25 @@ table.dt .rowlabel { background: var(--bg); font-weight: 600; }
       </select>
     </section>
     <section>
-      <h2>Structured &rarr; SQL</h2>
-      <button class="ex" data-q="How many high-severity findings are still open?">How many high-severity findings are still open?<small>exact count, no model</small></button>
-      <button class="ex" data-q="Are all findings closed?">Are all findings closed?<small>counterexample search</small></button>
-      <button class="ex" data-q="Which findings cite CWE-284?">Which findings cite CWE-284?<small>identifier lookup</small></button>
+      <h2>Corpus &amp; exact counts</h2>
+      <button class="ex" data-q="How many audit reports are indexed?">How many audit reports are indexed?<small>exact catalogue answer</small></button>
+      <button class="ex" data-q="How many critical findings are still open?">How many critical findings are still open?<small>exact SQL count</small></button>
+      <button class="ex" data-q="Break down the findings by severity and status">Break down findings by severity and status<small>chart from SQL</small></button>
+      <button class="ex" data-q="What are the most common CWEs across all findings?">What are the most common CWEs?<small>top values</small></button>
     </section>
     <section>
-      <h2>Narrative &rarr; retrieval</h2>
-      <button class="ex" data-q="What access control weaknesses were identified?">What access control weaknesses were identified?<small>open-ended prose answer</small></button>
-      <button class="ex" data-q="What remediation was recommended for the token API issue?">What remediation was recommended for the token API?<small>cites the recommendation</small></button>
-      <button class="ex" data-q="Was the database server patched?">Was the database server patched?<small>should abstain honestly</small></button>
+      <h2>Narrative &rarr; cited answers</h2>
+      <button class="ex" data-q="What access control weaknesses were identified?">What access control weaknesses were identified?<small>prose with citations</small></button>
+      <button class="ex" data-q="Summarise the most severe finding and the recommended fix">Summarise the most severe finding and its fix<small>quotes the recommendation</small></button>
+      <button class="ex" data-q="Was the HR database encrypted at rest?">Was the HR database encrypted at rest?<small>should say: not covered</small></button>
     </section>
     <section>
-      <h2>Figures &amp; follow-up</h2>
-      <button class="ex" data-q="Show me the proof of concept for the access control finding">Show me the proof of concept<small>joins figures by finding id</small></button>
-      <button class="ex" data-q="Tell me more about it">Tell me more about it<small>uses conversation history</small></button>
+      <h2>Analysis &amp; data quality</h2>
+      <button class="ex" data-q="Compare the reports by open findings">Compare the reports<small>chart + table</small></button>
+      <button class="ex" data-q="Which findings repeat across reports?">Which findings repeat across reports?<small>matched on CWE/CVE/title</small></button>
+      <button class="ex" data-q="Which reports failed validation and why?">Which reports failed validation?<small>quality gate</small></button>
+      <button class="ex" data-q="What types of information are available for each finding?">What information does each finding have?<small>field coverage</small></button>
+      <button class="ex" data-q="Tell me more about the first one">Tell me more about the first one<small>follow-up, uses history</small></button>
     </section>
   </aside>
 </main>
@@ -199,13 +203,31 @@ const sendBtn = document.getElementById('send');
 const scopeSel = document.getElementById('scope');
 let sessionId = null;
 
+// Optional API key (server setting RAGAUDIT_API__API_KEY). Asked for once on
+// the first 401 and kept for this browser tab only.
+function apiKey() { try { return sessionStorage.getItem('ragaudit_key') || ''; } catch { return ''; } }
+async function api(url, opts = {}, retried = false) {
+  const headers = Object.assign({}, opts.headers || {});
+  if (apiKey()) headers['X-API-Key'] = apiKey();
+  const res = await fetch(url, Object.assign({}, opts, { headers }));
+  if (res.status === 401 && !retried) {
+    const k = window.prompt('This server needs an API key:');
+    if (k) {
+      try { sessionStorage.setItem('ragaudit_key', k.trim()); } catch {}
+      return api(url, opts, true);
+    }
+  }
+  return res;
+}
+function withKey(url) { return apiKey() ? `${url}?key=${encodeURIComponent(apiKey())}` : url; }
+
 function esc(s) {
   return String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 }
 
 async function boot() {
   try {
-    const r = await fetch('/readyz');
+    const r = await api('/readyz');
     const d = await r.json();
     const vectors = d.checks?.index_vectors;
     const idx = document.getElementById('st-index');
@@ -217,11 +239,16 @@ async function boot() {
   } catch { /* status is cosmetic; the app still works */ }
 
   try {
-    const d = await (await fetch('/reports')).json();
+    const d = await (await api('/reports')).json();
     for (const rep of d.reports || []) {
       const o = document.createElement('option');
       o.value = rep.report_id;
-      o.textContent = `${rep.report_id} — ${(rep.title || '').slice(0, 34)}`;
+      const quarantined = rep.status === 'quarantined';
+      o.textContent = rep.report_id + (rep.title ? ` · ${rep.title.slice(0, 30)}` : '') +
+        (quarantined ? ' (quarantined)' : ` (${rep.findings ?? '?'})`);
+      // Quarantined reports have no searchable content; selecting one would
+      // only ever produce empty answers.
+      if (quarantined) o.disabled = true;
       scopeSel.appendChild(o);
     }
   } catch { /* scope selector is optional */ }
@@ -267,8 +294,8 @@ function render(question, data) {
     html += '<div class="figs">';
     for (const f of data.figures.slice(0, 12)) {
       if (f.available && f.url) {
-        html += `<a class="figimg" href="${esc(f.url)}" target="_blank" rel="noopener">` +
-                `<img src="${esc(f.url)}" alt="${esc(f.token)}" loading="lazy"></a>`;
+        html += `<a class="figimg" href="${esc(withKey(f.url))}" target="_blank" rel="noopener">` +
+                `<img src="${esc(withKey(f.url))}" alt="${esc(f.token)}" loading="lazy"></a>`;
       } else {
         html += `<span class="fig" title="referenced by the report, image not staged">${esc(f.token)}</span>`;
       }
@@ -335,15 +362,24 @@ function renderChart(b) {
   const W = 620, H = 240, padL = 44, padB = 54, padT = 16, padR = 12;
   const plotW = W - padL - padR, plotH = H - padT - padB;
   const groups = b.x.length;
-  const maxV = Math.max(1, ...b.series.flatMap(s => s.values.map(v => Math.abs(v))));
   const stacked = b.chart === 'stacked_bar';
+  // Scale to the tallest bar: for stacked bars that is the largest column
+  // TOTAL, not the largest single segment (which let stacks overflow).
+  const rawMax = stacked
+    ? Math.max(1, ...b.x.map((_, i) => b.series.reduce((t, s) => t + Math.abs(s.values[i] || 0), 0)))
+    : Math.max(1, ...b.series.flatMap(s => s.values.map(v => Math.abs(v))));
+  // "Nice" axis: an integer step from 1/2/5 x 10^k, so labels are exact and
+  // evenly spaced (rounding maxV/4 produced 0,1,3,4,5).
+  const mag = Math.pow(10, Math.floor(Math.log10(rawMax / 4)));
+  const step = Math.max(1, [1, 2, 5, 10].map(m => m * mag).find(st => rawMax / st <= 5) || 10 * mag);
+  const ticks = Math.max(1, Math.ceil(rawMax / step));
+  const maxV = step * ticks;
 
   let svg = `<svg viewBox="0 0 ${W} ${H}" class="chart" role="img" aria-label="${esc(b.title || 'chart')}">`;
   // y gridlines + labels
-  const ticks = 4;
   for (let i = 0; i <= ticks; i++) {
     const y = padT + plotH - (plotH * i / ticks);
-    const val = Math.round(maxV * i / ticks);
+    const val = step * i;
     svg += `<line x1="${padL}" y1="${y}" x2="${W - padR}" y2="${y}" stroke="var(--line)" stroke-width="1"/>`;
     svg += `<text x="${padL - 6}" y="${y + 3}" text-anchor="end" class="axlab">${val}</text>`;
   }
@@ -443,7 +479,7 @@ async function ask(question) {
   try {
     const body = { question, session_id: sessionId };
     if (scopeSel.value) body.report_ids = [scopeSel.value];
-    const res = await fetch('/ask', {
+    const res = await api('/ask', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -462,7 +498,7 @@ async function ask(question) {
   } catch (err) {
     pending.remove();
     render(question, {
-      answer: 'Could not reach the server. Is `ragaudit serve` running?',
+      answer: 'Could not reach the server. Is `python run.py serve` running?',
       route: 'error', review_flags: [], citations: [], figures: [], latency_s: 0,
     });
   } finally {

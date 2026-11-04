@@ -63,6 +63,18 @@ many tool errors, or a step cap — whichever comes first.
 
 ---
 
+## Quick start
+
+**Read [RUN_GUIDE.md](RUN_GUIDE.md)** for the full step-by-step guide. In short:
+
+```bash
+python run.py go path/to/json       # Windows: py run.py go path\to\json
+```
+
+One command: on the first run it creates `.venv`, installs packages, downloads the models and pulls the Ollama chat model; then it surveys, validates, ingests and crosschecks the folder, runs smoke questions and opens the web console. Needs Python 3.10+ and the Ollama app installed, and internet on the first run.
+
+Then open http://localhost:8077. What changed in this version: [CHANGES.md](CHANGES.md).
+
 ## Requirements
 
 - Python 3.10+
@@ -72,9 +84,8 @@ many tool errors, or a step cap — whichever comes first.
   (`Qwen3-Embedding-0.6B`, `Qwen3-Reranker-0.6B`)
 
 ```bash
-pip install "pydantic>=2.6" "pydantic-settings>=2.2" numpy requests fastapi uvicorn \
-            sentence-transformers transformers torch
-pip install faiss-cpu      # optional: HNSW index for large corpora
+pip install -r requirements.txt     # or: python run.py setup (does this in a .venv)
+pip install faiss-cpu               # optional: HNSW index for large corpora
 ```
 
 ## Running
@@ -87,14 +98,17 @@ ollama pull qwen3:8b
 python -m ragaudit.cli ingest path/to/reports
 
 # Web console with charts, citations and a tool-call trace
-python -m ragaudit.cli serve --port 8077      # then open http://localhost:8077
+python -m ragaudit.cli serve                  # then open http://localhost:8077
 ```
 
 Other commands:
 
 | Command | Purpose |
 |---|---|
+| `survey <path>` | Shape of a JSON corpus: which fields are mapped, which are ignored; writes nothing |
 | `validate <path>` | Check extraction quality; writes nothing |
+| `crosscheck <path>` | Compare stored finding counts with the raw files |
+| `reset --yes` | Delete the catalogue and index |
 | `ask "<question>"` | One question from the terminal |
 | `chat` | Interactive multi-turn session |
 | `findings --severity High` | Query the structured store directly |
@@ -145,6 +159,10 @@ and joined to their findings rather than dropped.
 ## Layout
 
 ```
+run.py        one-stop launcher (setup, doctor, go, survey, ingest, serve, ...); see RUN_GUIDE.md
+sample_data/  three fictional reports (one deliberately broken) to rehearse on
+eval/         sample evaluation questions
+tests/        test suite with a fake embedder and fake LLM (python run.py selftest)
 ragaudit/
   agent/      tool registry, tools, agent loop, evidence ledger, compute, render blocks
   chat/       chat service and sessions
@@ -154,13 +172,14 @@ ragaudit/
   store/      SQLite catalogue with FTS5, vector index (numpy / FAISS)
   api/        FastAPI server and the web console
   eval/       metrics with bootstrap intervals and McNemar's test
+  corpus_tools.py  survey (field coverage of a JSON corpus) and crosscheck (raw vs stored counts)
 ```
 
 ## Known limitations
 
-- Some aggregate paths still load matching rows to count them, and the
-  default vector backend is an exact linear scan. Both are fine at hundreds of
-  reports; use `faiss` and expect a scalability pass before thousands.
+- Counts run in SQL, but the aggregate/breakdown tools still load matching
+  rows into Python, and the default vector backend is an exact linear scan.
+  Both are fine at hundreds to low thousands of reports; use `faiss` beyond that.
 - Exporting results (CSV) behind a confirmation prompt is designed but not
   yet implemented.
 - Figures display only when image files have been staged next to the index;

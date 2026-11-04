@@ -15,16 +15,30 @@ from ragaudit.agent.registry import ToolContext, ToolGroup, ToolRegistry, ToolRe
 
 
 def _list_reports(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
-    reports = []
-    for rid in ctx.catalog.report_ids():
-        meta = ctx.catalog.get_report_meta(rid)
-        reports.append({
-            "report_id": rid,
-            "title": meta.title if meta else "",
-            "classification": meta.classification if meta else "",
-            "report_type": meta.report_type if meta else "",
-        })
-    return ToolResult(content={"reports": reports, "count": len(reports)})
+    """Every report the catalogue knows, with its ingest status.
+
+    Quarantined reports are listed (so "how many reports" is honest about
+    them) but marked, because their content is never searchable or citable.
+    """
+    reports = [
+        {
+            "report_id": r["report_id"],
+            "title": r["title"],
+            "status": r["ingest_status"],
+            "findings": r["findings"],
+            "classification": r["classification"],
+            "report_type": r["report_type"],
+        }
+        for r in ctx.catalog.reports_overview()
+    ]
+    indexed = sum(1 for r in reports if r["status"] == "indexed")
+    return ToolResult(
+        content={"reports": reports, "count": len(reports), "indexed": indexed,
+                 "quarantined": len(reports) - indexed},
+        blocks=[{"kind": "table", "title": "Reports",
+                 "columns": ["report_id", "title", "status", "findings"],
+                 "rows": [[r["report_id"], r["title"], r["status"], r["findings"]] for r in reports]}],
+    )
 
 
 def _find_report(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:

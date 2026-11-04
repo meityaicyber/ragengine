@@ -111,6 +111,7 @@ STATUS_TERMS = {
     "remediated": FindingStatus.CLOSED,
     "fixed": FindingStatus.CLOSED,
     "in progress": FindingStatus.IN_PROGRESS,
+    "partially remediated": FindingStatus.PARTIALLY_REMEDIATED,
     "risk accepted": FindingStatus.RISK_ACCEPTED,
 }
 

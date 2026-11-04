@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS reports (
     source_file        TEXT NOT NULL DEFAULT '',
     source_sha256      TEXT NOT NULL DEFAULT '',
     extractor_version  TEXT NOT NULL DEFAULT '',
+    ingest_path        TEXT NOT NULL DEFAULT '',
     ingested_at        TEXT NOT NULL DEFAULT '',
     ingest_status      TEXT NOT NULL DEFAULT 'pending',
     validation_json    TEXT NOT NULL DEFAULT '{}'
@@ -119,6 +120,7 @@ CREATE TABLE IF NOT EXISTS chunks (
     figures_json TEXT NOT NULL DEFAULT '[]'
 );
 CREATE INDEX IF NOT EXISTS idx_chunks_report ON chunks(report_id);
+CREATE INDEX IF NOT EXISTS idx_chunks_finding ON chunks(finding_id);
 
 -- Lexical half of hybrid retrieval. FTS5 is used in place of a hand-rolled
 -- BM25 so the lexical index is incremental and does not need rebuilding from
@@ -154,7 +156,18 @@ class Catalog:
         self._conn = sqlite3.connect(str(self.path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(SCHEMA)
+        self._migrate()
         self._conn.commit()
+
+    def _migrate(self) -> None:
+        """Bring a catalogue created by an older version up to this schema.
+
+        ``CREATE TABLE IF NOT EXISTS`` never adds columns to an existing
+        table, so new columns are added here explicitly.
+        """
+        columns = {r["name"] for r in self._conn.execute("PRAGMA table_info(reports)")}
+        if "ingest_path" not in columns:
+            self._conn.execute("ALTER TABLE reports ADD COLUMN ingest_path TEXT NOT NULL DEFAULT ''")
 
     def close(self) -> None:
         self._conn.close()
@@ -196,8 +209,8 @@ class Catalog:
                     report_id, title, report_type, audit_type, organisation, auditor,
                     classification, release_date, audit_period_from, audit_period_to,
                     standards_json, source_file, source_sha256, extractor_version,
-                    ingested_at, ingest_status, validation_json
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    ingest_path, ingested_at, ingest_status, validation_json
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     meta.report_id,
@@ -214,6 +227,7 @@ class Catalog:
                     meta.source_file,
                     meta.source_sha256,
                     meta.extractor_version,
+                    meta.ingest_path,
                     meta.ingested_at,
                     status,
                     json.dumps(validation),
@@ -339,6 +353,7 @@ class Catalog:
             source_file=row["source_file"],
             source_sha256=row["source_sha256"],
             extractor_version=row["extractor_version"],
+            ingest_path=row["ingest_path"],
             ingested_at=row["ingested_at"],
         )
 
@@ -347,6 +362,81 @@ class Catalog:
             "SELECT source_sha256 FROM reports WHERE report_id = ?", (report_id,)
         ).fetchone()
         return row["source_sha256"] if row else None
+
+    def ingest_path(self, report_id: str) -> str | None:
+        """Absolute path the report was ingested from, or None if unknown."""
+        row = self._conn.execute(
+            "SELECT ingest_path FROM reports WHERE report_id = ?", (report_id,)
+        ).fetchone()
+        return row["ingest_path"] if row else None
+
+    def report_id_for_path(self, path: str) -> str | None:
+        """Report id previously ingested from this exact file, if any."""
+        row = self._conn.execute(
+            "SELECT report_id FROM reports WHERE ingest_path = ? AND ingest_path != ''", (path,)
+        ).fetchone()
+        return row["report_id"] if row else None
+
+    def chunk_ids(self, report_id: str) -> list[str]:
+        return [
+            r["chunk_id"]
+            for r in self._conn.execute(
+                "SELECT chunk_id FROM chunks WHERE report_id = ? ORDER BY chunk_id", (report_id,)
+            )
+        ]
+
+    def chunks_for_finding(
+        self, finding_id: str, report_ids: Sequence[str] | None = None
+    ) -> list[sqlite3.Row]:
+        """Chunks of one finding id (optionally scoped), via SQL not a full scan."""
+        sql = "SELECT * FROM chunks WHERE finding_id = ?"
+        params: list[Any] = [finding_id]
+        if report_ids:
+            sql += f" AND report_id IN ({','.join('?' * len(report_ids))})"
+            params.extend(report_ids)
+        return list(self._conn.execute(sql + " ORDER BY report_id, chunk_id", params))
+
+    def findings_by_id(self, finding_id: str, report_ids: Sequence[str] | None = None) -> list[Finding]:
+        """Findings with this exact id (case-insensitive), optionally scoped."""
+        sql = "SELECT f.* FROM findings f WHERE UPPER(f.finding_id) = UPPER(?)"
+        params: list[Any] = [finding_id]
+        if report_ids:
+            sql += f" AND f.report_id IN ({','.join('?' * len(report_ids))})"
+            params.extend(report_ids)
+        found = [self._row_to_finding(r) for r in self._conn.execute(sql, params)]
+        self._attach_multivalued(found)
+        return found
+
+    def reports_overview(self) -> list[dict[str, Any]]:
+        """One row per report with status and finding count, in one query."""
+        rows = self._conn.execute(
+            "SELECT r.report_id, r.title, r.classification, r.report_type, r.ingest_status, "
+            "r.release_date, (SELECT COUNT(*) FROM findings f WHERE f.report_id = r.report_id) AS findings "
+            "FROM reports r ORDER BY r.report_id"
+        )
+        return [dict(r) for r in rows]
+
+    def report_titles(self) -> dict[str, str]:
+        """report_id -> title for every report, in one query."""
+        return {r["report_id"]: r["title"] for r in self._conn.execute("SELECT report_id, title FROM reports")}
+
+    def distinct_finding_ids(self) -> set[str]:
+        return {r[0] for r in self._conn.execute("SELECT DISTINCT finding_id FROM findings")}
+
+    def validation_record(self, report_id: str) -> dict[str, Any]:
+        row = self._conn.execute(
+            "SELECT validation_json FROM reports WHERE report_id = ?", (report_id,)
+        ).fetchone()
+        try:
+            return json.loads(row["validation_json"]) if row and row["validation_json"] else {}
+        except ValueError:
+            return {}
+
+    def report_status(self, report_id: str) -> str | None:
+        row = self._conn.execute(
+            "SELECT ingest_status FROM reports WHERE report_id = ?", (report_id,)
+        ).fetchone()
+        return row["ingest_status"] if row else None
 
     def findings(
         self,
@@ -361,18 +451,53 @@ class Catalog:
         limit: int | None = None,
     ) -> list[Finding]:
         """Filtered finding query. This is the exact-answer path."""
-        sql = ["SELECT f.* FROM findings f"]
+        joins, where, params = self._filter_sql(
+            report_ids=report_ids, severities=severities, statuses=statuses,
+            min_severity_rank=min_severity_rank, cwe=cwe, cve=cve, asset_like=asset_like,
+        )
+        sql = ["SELECT f.* FROM findings f", *joins]
+        if where:
+            sql.append("WHERE " + " AND ".join(where))
+        sql.append("GROUP BY f.finding_key ORDER BY f.severity_rank DESC, f.finding_id")
+        if limit:
+            sql.append("LIMIT ?")
+            params.append(limit)
+
+        rows = self._conn.execute(" ".join(sql), params).fetchall()
+        findings = [self._row_to_finding(r) for r in rows]
+        self._attach_multivalued(findings)
+        return findings
+
+    @staticmethod
+    def _filter_sql(
+        *,
+        report_ids: Sequence[str] | None = None,
+        severities: Sequence[str] | None = None,
+        statuses: Sequence[str] | None = None,
+        min_severity_rank: int | None = None,
+        cwe: str | None = None,
+        cve: str | None = None,
+        asset_like: str | None = None,
+    ) -> tuple[list[str], list[str], list[Any]]:
+        """Shared JOIN/WHERE builder so list and count can never disagree."""
+        sql: list[str] = []
         where: list[str] = []
         params: list[Any] = []
 
-        if cwe or cve:
-            sql.append("JOIN finding_identifiers fi ON fi.finding_key = f.finding_key")
-            if cwe:
-                where.append("fi.kind = 'cwe' AND UPPER(fi.value) LIKE ?")
-                params.append(f"%{cwe.upper()}%")
-            else:
-                where.append("fi.kind = 'cve' AND UPPER(fi.value) LIKE ?")
-                params.append(f"%{str(cve).upper()}%")
+        identifiers = []
+        if cwe:
+            identifiers.append(("cwe", _ident_pattern(cwe, "CWE")))
+        if cve:
+            identifiers.append(("cve", _ident_pattern(cve, "CVE")))
+        # One join per identifier. Previously, when both a CWE and a CVE were
+        # given, the CVE filter was silently dropped.
+        for n, (kind, pattern) in enumerate(identifiers):
+            alias = f"fi{n}"
+            sql.append(f"JOIN finding_identifiers {alias} ON {alias}.finding_key = f.finding_key")
+            # Whole-identifier match. The old LIKE '%CWE-28%' also matched
+            # CWE-284 and CWE-287, inflating exact counts.
+            where.append(f"{alias}.kind = ? AND (UPPER({alias}.value) || ' ') GLOB ?")
+            params.extend([kind, pattern])
         if asset_like:
             sql.append("JOIN finding_assets fa ON fa.finding_key = f.finding_key")
             where.append("fa.asset LIKE ?")
@@ -389,18 +514,7 @@ class Catalog:
         if min_severity_rank is not None:
             where.append("f.severity_rank >= ?")
             params.append(min_severity_rank)
-
-        if where:
-            sql.append("WHERE " + " AND ".join(where))
-        sql.append("GROUP BY f.finding_key ORDER BY f.severity_rank DESC, f.finding_id")
-        if limit:
-            sql.append("LIMIT ?")
-            params.append(limit)
-
-        rows = self._conn.execute(" ".join(sql), params).fetchall()
-        findings = [self._row_to_finding(r) for r in rows]
-        self._attach_multivalued(findings)
-        return findings
+        return sql, where, params
 
     def _attach_multivalued(self, findings: list[Finding]) -> None:
         """Populate CWE/CVE/asset lists in one round trip.
@@ -432,8 +546,13 @@ class Catalog:
                 target.affected_assets.append(row["asset"])
 
     def count_findings(self, **kwargs: Any) -> int:
+        """Exact count in SQL. Previously loaded every matching row to len() it."""
         kwargs.pop("limit", None)
-        return len(self.findings(**kwargs))
+        joins, where, params = self._filter_sql(**kwargs)
+        sql = ["SELECT COUNT(DISTINCT f.finding_key) FROM findings f", *joins]
+        if where:
+            sql.append("WHERE " + " AND ".join(where))
+        return int(self._conn.execute(" ".join(sql), params).fetchone()[0])
 
     def severity_breakdown(self, report_ids: Sequence[str] | None = None) -> dict[str, int]:
         sql = "SELECT severity, COUNT(*) AS n FROM findings"
@@ -545,6 +664,19 @@ class Catalog:
             is_repeat=None if row["is_repeat"] is None else bool(row["is_repeat"]),
             raw=json.loads(row["raw_json"]) if row["raw_json"] else {},
         )
+
+
+def _ident_pattern(value: str, prefix: str) -> str:
+    """GLOB pattern matching one CWE/CVE id as a whole token.
+
+    "284" and "cwe-284" both become CWE-284; the trailing [^0-9] stops
+    CWE-28 matching CWE-284. Stored values such as "CWE-284: Improper Access
+    Control" still match because a space is appended before matching.
+    """
+    text = "".join(ch for ch in str(value).upper() if ch.isalnum() or ch == "-").strip("-")
+    if text.isdigit():
+        text = f"{prefix}-{text}"
+    return f"*{text}[^0-9]*"
 
 
 def _figure_owner(report: Report, token: str) -> str:

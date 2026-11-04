@@ -1,0 +1,426 @@
+{
+  "report_meta": {
+    "report_id": "SARUS-PAY-2026-01",
+    "report_title": "Sarus Pay Web and API Security Audit",
+    "report_type": "Web Application and API Assessment",
+    "report_release_date": "2026-03-20",
+    "report_version": "1.1",
+    "audit_type": "Follow-up Audit Report",
+    "audit_period": {
+      "from": "2026-03-02",
+      "to": "2026-03-18"
+    },
+    "classification": "Confidential"
+  },
+  "document_control": {
+    "document_title": "Sarus Pay Security Audit",
+    "document_id": "SP-SEC-26-01",
+    "document_version": "1.1",
+    "prepared_by": {
+      "name": "Rohan Iyer",
+      "auditing_team_sr_no": 2
+    },
+    "reviewed_by": {
+      "name": "Meera Nair",
+      "auditing_team_sr_no": 3
+    },
+    "approved_by": {
+      "name": "Asha Verma",
+      "auditing_team_sr_no": 1
+    },
+    "released_by": {
+      "name": "Asha Verma",
+      "auditing_team_sr_no": 1
+    },
+    "release_date": "2026-03-20",
+    "change_history": [
+      {
+        "version": "1.0",
+        "date": "2026-03-12",
+        "remarks": "Initial Audit Report"
+      },
+      {
+        "version": "1.1",
+        "date": "2026-03-20",
+        "remarks": "Added retest results"
+      }
+    ],
+    "distribution_list": [
+      {
+        "name": "Kabir Shah",
+        "organization": "Sarus Pay (fictional)",
+        "designation": "CISO",
+        "email": "ciso@sarus.example"
+      }
+    ]
+  },
+  "engagement_scope": {
+    "assets": [
+      {
+        "sr_no": 1,
+        "asset_description": "Customer and merchant web portal",
+        "url": "https://pay.sarus.example",
+        "criticality": "High",
+        "internal_ip": "NA",
+        "public_ip": "NA",
+        "in_scope_functions": "Login, P2P transfer, merchant settlement"
+      },
+      {
+        "sr_no": 2,
+        "asset_description": "Payments API",
+        "url": "https://pay.sarus.example/api/v1",
+        "criticality": "High",
+        "internal_ip": "NA",
+        "public_ip": "NA",
+        "in_scope_functions": "Transaction search, refunds"
+      }
+    ],
+    "scope_updated_till": "2026-03-01",
+    "exclusions": [
+      "Mobile apps (separate engagement)",
+      "Denial-of-service testing"
+    ],
+    "testing_credentials": [
+      {
+        "role": "Unauthenticated",
+        "account_identifier": "none",
+        "auth_type": "None",
+        "purpose": "External attacker view"
+      },
+      {
+        "role": "Merchant Admin",
+        "account_identifier": "merchant-test-02",
+        "auth_type": "Password + OTP",
+        "purpose": "Privileged flows"
+      }
+    ]
+  },
+  "auditing_team": [
+    {
+      "sr_no": 1,
+      "name": "Asha Verma",
+      "designation": "Lead Auditor",
+      "email": "asha.verma@auditors.example",
+      "certifications": "OSCP, CISSP"
+    },
+    {
+      "sr_no": 2,
+      "name": "Rohan Iyer",
+      "designation": "Security Consultant",
+      "email": "rohan.iyer@auditors.example",
+      "certifications": "CEH, eWPTX"
+    },
+    {
+      "sr_no": 3,
+      "name": "Meera Nair",
+      "designation": "QA Reviewer",
+      "email": "meera.nair@auditors.example",
+      "certifications": "CISA"
+    }
+  ],
+  "audit_timeline": {
+    "assessment_start_date": "2026-03-02",
+    "assessment_end_date": "2026-03-18"
+  },
+  "methodology": {
+    "standards_referred": [
+      "OWASP ASVS 4.0.3",
+      "OWASP API Security Top 10 2023",
+      "CERT-In Guidelines"
+    ]
+  },
+  "tools_used": [
+    {
+      "sr_no": 1,
+      "tool_name": "Burp Suite Professional",
+      "version": "2026.2",
+      "license_type": "Licensed"
+    },
+    {
+      "sr_no": 2,
+      "tool_name": "sqlmap",
+      "version": "1.8.3",
+      "license_type": "Open Source"
+    }
+  ],
+  "executive_summary": {
+    "total_findings": 4,
+    "severity_count": {
+      "critical": 1,
+      "high": 1,
+      "medium": 1,
+      "low": 1
+    },
+    "narrative": "The assessment found one critical SQL injection in the payments API that allows unauthenticated access to customer and transaction data and must be fixed before further release. A known vulnerable JavaScript library remains on the merchant portal. Login throttling and verbose errors were fixed during the engagement.",
+    "summary_table": [
+      {
+        "sr_no": 1,
+        "finding_id": "OBS-01",
+        "affected_asset": "https://pay.sarus.example/api/v1/transactions/search",
+        "title": "SQL injection in transaction search",
+        "cwe": "CWE-89",
+        "severity": "Critical",
+        "status": "Open",
+        "new_or_repeat": "New"
+      },
+      {
+        "sr_no": 2,
+        "finding_id": "OBS-02",
+        "affected_asset": "https://pay.sarus.example",
+        "title": "Outdated jQuery with known XSS",
+        "cwe": "CWE-79",
+        "severity": "High",
+        "status": "Partially Remediated",
+        "new_or_repeat": "Repeat"
+      },
+      {
+        "sr_no": 3,
+        "finding_id": "OBS-03",
+        "affected_asset": "https://pay.sarus.example/login",
+        "title": "Missing rate limiting on login",
+        "cwe": "CWE-307",
+        "severity": "Medium",
+        "status": "Closed",
+        "new_or_repeat": "New"
+      },
+      {
+        "sr_no": 4,
+        "finding_id": "OBS-04",
+        "affected_asset": "https://pay.sarus.example/api/v1/*",
+        "title": "Verbose error messages",
+        "cwe": "CWE-209",
+        "severity": "Low",
+        "status": "Closed",
+        "new_or_repeat": "New"
+      }
+    ]
+  },
+  "detailed_observations": [
+    {
+      "finding_id": "OBS-01",
+      "title": "SQL injection in transaction search",
+      "status": "Open",
+      "severity": "Critical",
+      "impact_level": "Major",
+      "likelihood_level": "Easy",
+      "cve_id": [],
+      "cvss_score": 9.8,
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+      "severity_rationale": "Unauthenticated attackers can read and modify the full transaction database through a single parameter, so impact is Major and likelihood Easy.",
+      "reported_epss_score": null,
+      "observation_date": "2026-03-04",
+      "cwe": [
+        "CWE-89"
+      ],
+      "affected_asset": [
+        "https://pay.sarus.example/api/v1/transactions/search"
+      ],
+      "regulatory_references": [
+        "RBI Master Direction on Digital Payment Security Controls 2021, para 6"
+      ],
+      "observation_description": "The q parameter of the transaction search endpoint is concatenated into a SQL statement. Injecting a single quote returned a database error, and a UNION-based payload returned rows from the users table.",
+      "preconditions": "Network access to the public API; no authentication required.",
+      "proof_of_concept": [
+        {
+          "sr_no": 1,
+          "type": "image",
+          "reference": "Fig 1",
+          "capture_date": "2026-03-04",
+          "is_retest": false,
+          "redacted": "Yes",
+          "description": "UNION payload returning user records"
+        }
+      ],
+      "impact": "Full read and write access to payment and customer records, enabling fraud and data theft.",
+      "likely_root_cause": "User input is concatenated into SQL instead of using parameterised queries.",
+      "recommendation": "Replace string concatenation in the transaction search query with parameterised statements and validate the q parameter against an allow-list of characters.",
+      "reference": "https://owasp.org/Top10/A03_2021-Injection/",
+      "new_or_repeat": "New"
+    },
+    {
+      "finding_id": "OBS-02",
+      "title": "Outdated jQuery with known XSS",
+      "status": "Partially Remediated",
+      "severity": "High",
+      "impact_level": "Moderate",
+      "likelihood_level": "Easy",
+      "cve_id": [
+        "CVE-2020-11023"
+      ],
+      "cvss_score": 6.1,
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N",
+      "severity_rationale": "",
+      "reported_epss_score": 0.27,
+      "observation_date": "2026-03-05",
+      "cwe": [
+        "CWE-79"
+      ],
+      "affected_asset": [
+        "https://pay.sarus.example"
+      ],
+      "regulatory_references": [
+        "None"
+      ],
+      "observation_description": "The merchant portal loads jQuery 3.4.1, which is affected by CVE-2020-11023. The customer portal was upgraded during the engagement; the merchant portal was not.",
+      "preconditions": "A victim must open a crafted link while logged in.",
+      "proof_of_concept": [
+        {
+          "sr_no": 2,
+          "type": "image",
+          "reference": "Fig 2",
+          "capture_date": "2026-03-05",
+          "is_retest": false,
+          "redacted": "NA",
+          "description": "Library version banner"
+        },
+        {
+          "sr_no": 3,
+          "type": "image",
+          "reference": "Fig 3",
+          "capture_date": "2026-03-18",
+          "is_retest": true,
+          "redacted": "NA",
+          "description": "Retest: customer portal upgraded to 3.7.1"
+        }
+      ],
+      "impact": "Script execution in a user's session could lead to session theft.",
+      "likely_root_cause": "Third-party libraries are not tracked in a dependency inventory.",
+      "recommendation": "Upgrade jQuery to 3.7.1 or later on the merchant portal and add front-end libraries to the dependency scanning pipeline.",
+      "reference": "https://nvd.nist.gov/vuln/detail/CVE-2020-11023",
+      "new_or_repeat": "Repeat"
+    },
+    {
+      "finding_id": "OBS-03",
+      "title": "Missing rate limiting on login",
+      "status": "Closed",
+      "severity": "Medium",
+      "impact_level": "Moderate",
+      "likelihood_level": "Moderate",
+      "cve_id": [],
+      "cvss_score": 5.3,
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N",
+      "severity_rationale": "Credential stuffing is possible but requires valid username lists, so likelihood is Moderate.",
+      "reported_epss_score": null,
+      "observation_date": "2026-03-05",
+      "cwe": [
+        "CWE-307"
+      ],
+      "affected_asset": [
+        "https://pay.sarus.example/login"
+      ],
+      "regulatory_references": [
+        "PCI DSS v4.0 Requirement 8.3.4"
+      ],
+      "observation_description": "The login endpoint accepted 1,000 failed attempts for one account within five minutes without lockout or CAPTCHA.",
+      "preconditions": "A list of valid usernames.",
+      "proof_of_concept": [
+        {
+          "sr_no": 4,
+          "type": "text",
+          "reference": "Log extract 1",
+          "capture_date": "2026-03-05",
+          "is_retest": false,
+          "redacted": "Yes",
+          "description": "1,000 failed attempts, no lockout"
+        }
+      ],
+      "impact": "Accounts with weak passwords can be taken over by automated guessing.",
+      "likely_root_cause": "No throttling control was implemented on the authentication service.",
+      "recommendation": "Lock the account for 15 minutes after 5 failed attempts and add CAPTCHA after 3 failures from one IP.",
+      "reference": "NA",
+      "new_or_repeat": "New"
+    },
+    {
+      "finding_id": "OBS-04",
+      "title": "Verbose error messages",
+      "status": "Closed",
+      "severity": "Low",
+      "impact_level": "Minor",
+      "likelihood_level": "Easy",
+      "cve_id": [],
+      "cvss_score": 3.7,
+      "cvss_vector": "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:L/I:N/A:N",
+      "severity_rationale": "Only framework and version information is disclosed.",
+      "reported_epss_score": null,
+      "observation_date": "2026-03-06",
+      "cwe": [
+        "CWE-209"
+      ],
+      "affected_asset": [
+        "https://pay.sarus.example/api/v1/*"
+      ],
+      "regulatory_references": [
+        "None"
+      ],
+      "observation_description": "Malformed JSON bodies returned full Java stack traces including framework versions.",
+      "preconditions": "None.",
+      "proof_of_concept": [
+        {
+          "sr_no": 5,
+          "type": "image",
+          "reference": "Fig 4",
+          "capture_date": "2026-03-06",
+          "is_retest": false,
+          "redacted": "NA",
+          "description": "Stack trace in response"
+        },
+        {
+          "sr_no": 6,
+          "type": "image",
+          "reference": "Fig 5",
+          "capture_date": "2026-03-18",
+          "is_retest": true,
+          "redacted": "NA",
+          "description": "Retest: generic error returned"
+        }
+      ],
+      "impact": "Disclosed versions help attackers select known exploits.",
+      "likely_root_cause": "Debug error handling left enabled in production.",
+      "recommendation": "Disable stack traces in production and return a generic error body with a correlation ID.",
+      "reference": "NA",
+      "new_or_repeat": "New"
+    }
+  ],
+  "appendices": {
+    "risk_rating_criteria": [
+      {
+        "rating": "Critical",
+        "description": "Immediate compromise of data or systems",
+        "impact_level": "Major",
+        "likelihood_level": "Easy"
+      },
+      {
+        "rating": "High",
+        "description": "Significant compromise requiring some interaction",
+        "impact_level": "Major",
+        "likelihood_level": "Moderate"
+      },
+      {
+        "rating": "Medium",
+        "description": "Limited compromise or harder to exploit",
+        "impact_level": "Moderate",
+        "likelihood_level": "Moderate"
+      },
+      {
+        "rating": "Low",
+        "description": "Minor information exposure",
+        "impact_level": "Minor",
+        "likelihood_level": "Easy"
+      }
+    ],
+    "retest_closure": [
+      {
+        "finding_id": "OBS-02",
+        "retest_date": "2026-03-18",
+        "closure_evidence_ref": 3,
+        "status": "Partially Remediated"
+      },
+      {
+        "finding_id": "OBS-04",
+        "retest_date": "2026-03-18",
+        "closure_evidence_ref": 5,
+        "status": "Closed"
+      }
+    ]
+  }
+}

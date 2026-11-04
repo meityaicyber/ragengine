@@ -1,0 +1,50 @@
+{
+  "report_meta": {
+    "report_id": "SAMPLE-BROKEN-003",
+    "report_title": "Osprey Intranet Audit (broken extraction sample)",
+    "classification": "Internal"
+  },
+  "executive_summary": {
+    "total_findings": 3,
+    "summary_table": [
+      {
+        "finding_id": "F1",
+        "title": "https://intranet.osprey.example/login",
+        "severity": "High"
+      },
+      {
+        "finding_id": "F2",
+        "title": "https://intranet.osprey.example/admin",
+        "severity": "Medium"
+      },
+      {
+        "finding_id": "F3",
+        "title": "https://intranet.osprey.example/files",
+        "severity": "Low"
+      }
+    ]
+  },
+  "detailed_observations": [
+    {
+      "finding_id": "F1",
+      "title": "https://intranet.osprey.example/login",
+      "severity": "High",
+      "status": "Open",
+      "observation_description": "Weak password policy."
+    },
+    {
+      "finding_id": "F2",
+      "title": "https://intranet.osprey.example/admin",
+      "severity": "Medium",
+      "status": "Open",
+      "observation_description": "Admin panel exposed."
+    },
+    {
+      "finding_id": "F3",
+      "title": "https://intranet.osprey.example/files",
+      "severity": "Low",
+      "status": "Open",
+      "observation_description": "Directory listing enabled."
+    }
+  ]
+}

@@ -42,13 +42,23 @@ class Severity(str, Enum):
             "moderate": cls.MEDIUM,
             "severe": cls.HIGH,
         }
-        return aliases.get(text, cls.UNKNOWN)
+        if text in aliases:
+            return aliases[text]
+        # Lenient fallback for extractor variants: "4 - High", "High Risk",
+        # "CRITICAL (9.8)", "Sev: Medium". First matching word wins, checked
+        # from most to least severe.
+        for pattern, member in _SEVERITY_WORDS:
+            if pattern.search(text):
+                return member
+        return cls.UNKNOWN
 
 
 class FindingStatus(str, Enum):
     OPEN = "Open"
     CLOSED = "Closed"
     IN_PROGRESS = "In Progress"
+    # Standard Template §9: Open / Closed / Partially Remediated.
+    PARTIALLY_REMEDIATED = "Partially Remediated"
     RISK_ACCEPTED = "Risk Accepted"
     UNKNOWN = "Unknown"
 
@@ -67,9 +77,42 @@ class FindingStatus(str, Enum):
             "wip": cls.IN_PROGRESS,
             "in-progress": cls.IN_PROGRESS,
             "ongoing": cls.IN_PROGRESS,
+            "partially remediated": cls.PARTIALLY_REMEDIATED,
+            "partially fixed": cls.PARTIALLY_REMEDIATED,
+            "partially closed": cls.PARTIALLY_REMEDIATED,
+            "partial": cls.PARTIALLY_REMEDIATED,
             "accepted": cls.RISK_ACCEPTED,
         }
-        return aliases.get(text, cls.UNKNOWN)
+        if text in aliases:
+            return aliases[text]
+        # Lenient fallback: "Not Fixed" must be Open (checked before
+        # "fixed"), "Partially Remediated" its own status, "Closed - Verified on
+        # retest" Closed.
+        for pattern, member in _STATUS_WORDS:
+            if pattern.search(text):
+                return member
+        return cls.UNKNOWN
+
+
+_SEVERITY_WORDS = [
+    (re.compile(r"\bcritical\b|\bcrit\b"), Severity.CRITICAL),
+    (re.compile(r"\bhigh\b|\bsevere\b"), Severity.HIGH),
+    (re.compile(r"\bmedium\b|\bmoderate\b|\bmed\b"), Severity.MEDIUM),
+    (re.compile(r"\blow\b"), Severity.LOW),
+    (re.compile(r"\binfo(rmational)?\b|\bnone\b"), Severity.INFORMATIONAL),
+]
+
+_STATUS_WORDS = [
+    (re.compile(r"\bnot\s+(yet\s+)?(fixed|resolved|remediated|closed|patched|mitigated)\b"
+                r"|\bunresolved\b|\bunremediated\b|\bpending\b|\boutstanding\b|\bre-?opened\b|\bopen\b"),
+     FindingStatus.OPEN),
+    (re.compile(r"\bpartial(ly)?\b"), FindingStatus.PARTIALLY_REMEDIATED),
+    (re.compile(r"\bin[\s-]?progress\b|\bwip\b|\bongoing\b|\bunder\s+remediation\b"),
+     FindingStatus.IN_PROGRESS),
+    (re.compile(r"\brisk[\s-]?accepted\b|\baccepted\b|\bexception\b"), FindingStatus.RISK_ACCEPTED),
+    (re.compile(r"\bclosed\b|\bfixed\b|\bresolved\b|\bremediated\b|\bpatched\b|\bmitigated\b|\bverified\b"),
+     FindingStatus.CLOSED),
+]
 
 
 # --------------------------------------------------------------------------
@@ -176,6 +219,15 @@ class Finding:
     impact: str = ""
     recommendation: str = ""
     preconditions: str = ""
+    root_cause: str = ""
+    references: str = ""
+    # Standard Template §9 fields, kept as stated in the report.
+    severity_rationale: str = ""
+    regulatory_references: str = ""
+    impact_level: str = ""
+    likelihood_level: str = ""
+    observation_date: str = ""
+    epss: str = ""
     figure_tokens: list[str] = field(default_factory=list)
     is_repeat: bool | None = None
     raw: dict[str, Any] = field(default_factory=dict)
@@ -197,6 +249,9 @@ class ReportMeta:
     source_file: str = ""
     source_sha256: str = ""
     extractor_version: str = ""
+    # Absolute path of the JSON file this report was ingested from. Used to
+    # tell two different files that derive the same report id apart.
+    ingest_path: str = ""
     ingested_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 

@@ -33,6 +33,7 @@ class RetrievalConfig:
     candidates_k: int = 60
     rrf_k: int = 60
     use_reranker: bool = True
+    rerank_k: int = 24
 
 
 def reciprocal_rank_fusion(
@@ -100,8 +101,13 @@ class HybridRetriever:
             return []
 
         if self.reranker and self.config.use_reranker:
-            scores = self.reranker.score(query, [c.embedding_text for c in chunks])
-            ranked = sorted(zip(chunks, scores), key=lambda p: p[1], reverse=True)[:top_k]
+            head, tail = chunks[: self.config.rerank_k], chunks[self.config.rerank_k:]
+            scores = self.reranker.score(query, [c.embedding_text for c in head])
+            ranked = sorted(zip(head, scores), key=lambda p: p[1], reverse=True)
+            # The unreranked tail keeps its fused order after the reranked head.
+            floor = min(scores) - 1.0 if scores else 0.0
+            ranked += [(c, floor) for c in tail]
+            ranked = ranked[:top_k]
             retriever_name = "hybrid+rerank"
         else:
             score_by_id = dict(fused)

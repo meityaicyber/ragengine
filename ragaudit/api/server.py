@@ -10,9 +10,11 @@ unanswerable at all (D03).
 from __future__ import annotations
 
 import logging
+import secrets
+import threading
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 
@@ -31,6 +33,11 @@ from ragaudit.observability import new_trace_id
 logger = logging.getLogger("ragaudit.api")
 
 _app_singleton: Application | None = None
+
+#: One question at a time. The catalogue shares a single SQLite connection
+#: across FastAPI's worker threads, which is not safe under concurrent use,
+#: and a local Ollama processes requests one by one anyway.
+_ask_lock = threading.Lock()
 
 
 def get_application() -> Application:
@@ -118,7 +125,22 @@ def _answer_to_response(answer, session_id: str, fallback_trace: str) -> AskResp
 
 
 def create_app(application: Application | None = None) -> FastAPI:
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def lifespan(_api):
+        """Load models in the background while the console opens, so the
+        first real question is not the slow one."""
+        def run() -> None:
+            app_ = get_application()
+            with _ask_lock:
+                app_.warm_up()
+
+        threading.Thread(target=run, name="warm-up", daemon=True).start()
+        yield
+
     api = FastAPI(
+        lifespan=lifespan,
         title="Audit Report Assistant",
         version="0.1.0",
         description="Conversational question answering over cybersecurity audit reports.",
@@ -126,6 +148,25 @@ def create_app(application: Application | None = None) -> FastAPI:
     if application is not None:
         global _app_singleton
         _app_singleton = application
+
+    #: Reachable without a key: the console page itself (it then asks for the
+    #: key), liveness, and the API docs.
+    open_paths = {"/", "/healthz", "/docs", "/redoc", "/openapi.json", "/favicon.ico"}
+
+    @api.middleware("http")
+    async def require_api_key(request: Request, call_next):
+        """Optional shared-secret auth (settings.api.api_key / RAGAUDIT_API__API_KEY).
+
+        Off when no key is configured. The key may come as an ``X-API-Key``
+        header, or as ``?key=`` for figure images (an <img> cannot send
+        headers). Compared in constant time.
+        """
+        expected = get_application().settings.api.api_key
+        if expected and request.url.path not in open_paths:
+            supplied = request.headers.get("x-api-key") or request.query_params.get("key") or ""
+            if not secrets.compare_digest(supplied.encode(), expected.encode()):
+                return JSONResponse({"detail": "missing or wrong API key"}, status_code=401)
+        return await call_next(request)
 
     @api.get("/", response_class=HTMLResponse)
     def index() -> HTMLResponse:
@@ -158,31 +199,32 @@ def create_app(application: Application | None = None) -> FastAPI:
 
     @api.get("/reports")
     def reports(app: Application = Depends(get_application)) -> dict:
-        out = []
-        for report_id in app.catalog.report_ids():
-            meta = app.catalog.get_report_meta(report_id)
-            if meta:
-                out.append(
-                    {
-                        "report_id": meta.report_id,
-                        "title": meta.title,
-                        "classification": meta.classification,
-                        "release_date": meta.release_date,
-                        "report_type": meta.report_type,
-                    }
-                )
-        return {"reports": out}
+        with _ask_lock:
+            rows = app.catalog.reports_overview()
+        return {"reports": [
+            {
+                "report_id": r["report_id"],
+                "title": r["title"],
+                "classification": r["classification"],
+                "release_date": r["release_date"],
+                "report_type": r["report_type"],
+                "status": r["ingest_status"],
+                "findings": r["findings"],
+            }
+            for r in rows
+        ]}
 
     @api.post("/ask", response_model=AskResponse)
     def ask(request: AskRequest, app: Application = Depends(get_application)) -> AskResponse:
         trace = new_trace_id()
         try:
-            chat = app.build_chat()
-            answer, session = chat.ask(
-                request.question,
-                session_id=request.session_id,
-                report_ids=request.report_ids,
-            )
+            with _ask_lock:
+                chat = app.build_chat()
+                answer, session = chat.ask(
+                    request.question,
+                    session_id=request.session_id,
+                    report_ids=request.report_ids,
+                )
         except Exception as exc:
             logger.exception("ask failed", extra={"trace_id": trace})
             raise HTTPException(status_code=500, detail=f"internal error (trace {trace})") from exc
@@ -207,10 +249,11 @@ def create_app(application: Application | None = None) -> FastAPI:
         def events():
             yield _sse("status", {"state": "working", "trace_id": trace})
             try:
-                chat = app.build_chat()
-                answer, session = chat.ask(
-                    request.question, session_id=request.session_id, report_ids=request.report_ids,
-                )
+                with _ask_lock:
+                    chat = app.build_chat()
+                    answer, session = chat.ask(
+                        request.question, session_id=request.session_id, report_ids=request.report_ids,
+                    )
             except Exception as exc:  # never leak a stack trace to the stream
                 logger.exception("ask_stream failed", extra={"trace_id": trace})
                 yield _sse("error", {"detail": f"internal error (trace {trace})"})
@@ -235,15 +278,19 @@ def create_app(application: Application | None = None) -> FastAPI:
     ) -> dict:
         """Exact structured query. No model involved, so the result is
         reproducible and can be re-run by hand against the catalogue."""
-        rows = app.catalog.findings(
+        filters = dict(
             report_ids=[report_id] if report_id else None,
             severities=[severity] if severity else None,
             statuses=[status] if status else None,
             cwe=cwe,
-            limit=limit,
         )
+        with _ask_lock:
+            rows = app.catalog.findings(**filters, limit=limit)
+            total = app.catalog.count_findings(**filters)
         return {
-            "count": len(rows),
+            # The true total, not the length of the (limited) page.
+            "count": total,
+            "returned": len(rows),
             "findings": [
                 {
                     "report_id": f.report_id,

@@ -18,9 +18,11 @@ def _compare_reports(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     """Side-by-side of two or more reports across structured dimensions."""
     report_ids = scoped_report_ids(ctx, args)
     if not report_ids or len(report_ids) < 2:
-        all_ids = ctx.catalog.report_ids()
+        # Only searchable reports: a quarantined one has no findings stored,
+        # so it would appear as a misleading column of zeros.
+        all_ids = ctx.catalog.report_ids(status="indexed")
         if len(all_ids) < 2:
-            raise ToolError("need at least two reports to compare")
+            raise ToolError("need at least two indexed reports to compare")
         report_ids = all_ids
 
     columns = []

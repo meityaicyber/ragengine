@@ -1,0 +1,75 @@
+{
+  "metadata": {
+    "document_title": "Heron Payments Mobile API Security Assessment",
+    "report_type": "API Security Assessment",
+    "organization_audited": "Heron Payments (fictional)",
+    "auditing_organization": "Example Auditors Pvt Ltd (fictional)",
+    "document_classification": "Restricted",
+    "standards_referenced": [
+      "OWASP API Security Top 10 2023"
+    ]
+  },
+  "document_control": {
+    "document_id": "SAMPLE-API-002",
+    "release_date": "2026-05-02"
+  },
+  "executive_summary": {
+    "total_vulnerabilities": 4
+  },
+  "vulnerabilities": [
+    {
+      "id": "V-1",
+      "vulnerability_title": "Broken object level authorisation on statements",
+      "risk_rating": "Critical",
+      "remediation_status": "Open",
+      "cwe_id": "CWE-639",
+      "affected_assets": [
+        "/api/v1/statements/{account}"
+      ],
+      "description": "Changing the account number in the statements path returned statements belonging to other customers for any logged-in user.",
+      "business_impact": "Disclosure of financial records of all customers.",
+      "remediation": "Check that the authenticated customer owns the requested account on every statements request."
+    },
+    {
+      "id": "V-2",
+      "vulnerability_title": "JWT accepted with none algorithm",
+      "risk_rating": "High",
+      "remediation_status": "Resolved",
+      "cwe_id": "CWE-347",
+      "cve_id": "CVE-2015-9235",
+      "affected_assets": [
+        "/api/v1/*"
+      ],
+      "description": "Tokens signed with alg=none were accepted by the gateway.",
+      "business_impact": "Full authentication bypass.",
+      "remediation": "Pin the accepted signing algorithm and reject unsigned tokens."
+    },
+    {
+      "id": "V-3",
+      "vulnerability_title": "Excessive data exposure in profile API",
+      "risk_rating": "Moderate",
+      "remediation_status": "WIP",
+      "cwe_id": "CWE-213",
+      "affected_assets": [
+        "/api/v1/profile"
+      ],
+      "description": "The profile response included the customer's full PAN and internal risk score although the app displays neither.",
+      "business_impact": "Sensitive data exposed to any client able to read the response.",
+      "remediation": "Return only the fields the client needs and mask card numbers server-side."
+    },
+    {
+      "id": "V-4",
+      "vulnerability_title": "Broken access control on token API",
+      "risk_rating": "High",
+      "remediation_status": "Open",
+      "cwe_id": "CWE-284",
+      "affected_assets": [
+        "/api/v1/tokens"
+      ],
+      "description": "Device tokens could be revoked by any authenticated user for any other user's device.",
+      "business_impact": "Targeted denial of service against customers.",
+      "remediation": "Enforce ownership checks on token revocation."
+    }
+  ],
+  "conclusion": "One critical authorisation flaw requires immediate remediation."
+}

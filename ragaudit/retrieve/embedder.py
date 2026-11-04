@@ -26,6 +26,24 @@ class ModelLoadError(RuntimeError):
     """Raised when a required local model cannot be loaded."""
 
 
+def _dtype_kwarg(dtype) -> dict:
+    """``from_pretrained`` dtype keyword for the installed transformers.
+
+    transformers >= 4.56 renamed ``torch_dtype`` to ``dtype``. The embedder
+    used one name and the reranker the other, so on any given install one of
+    them was wrong (an unknown kwarg is either rejected or silently ignored,
+    loading fp32 weights on GPU).
+    """
+    try:
+        import transformers
+
+        major, minor = (int(x) for x in transformers.__version__.split(".")[:2])
+        new = (major, minor) >= (4, 56)
+    except Exception:
+        new = False
+    return {"dtype": dtype} if new else {"torch_dtype": dtype}
+
+
 def require_local_path(path: str) -> Path:
     resolved = Path(path).expanduser()
     if not resolved.exists():
@@ -53,6 +71,9 @@ class Embedder:
         max_sequence_tokens: int = 1024,
         query_instruction: str = "",
         dimension: int | None = None,
+        pooling: str = "auto",
+        query_template: str = "auto",
+        passage_template: str = "auto",
     ) -> None:
         self.model_path = str(require_local_path(model_path))
         self.device = device
@@ -62,6 +83,12 @@ class Embedder:
         self._model = None
         self._tokenizer = None
         self._dimension = dimension
+        self.family = _detect_family(self.model_path)
+        self.pooling = pooling if pooling != "auto" else _FAMILY_POOLING[self.family]
+        self.query_template = (query_template if query_template != "auto"
+                               else _FAMILY_QUERY_TEMPLATE[self.family])
+        self.passage_template = (passage_template if passage_template != "auto"
+                                 else _FAMILY_PASSAGE_TEMPLATE[self.family])
 
     # -- lifecycle -------------------------------------------------------
 
@@ -80,7 +107,7 @@ class Embedder:
             self._tokenizer = AutoTokenizer.from_pretrained(self.model_path, local_files_only=True)
             dtype = torch.float16 if self.device.startswith("cuda") else torch.float32
             self._model = (
-                AutoModel.from_pretrained(self.model_path, local_files_only=True, torch_dtype=dtype)
+                AutoModel.from_pretrained(self.model_path, local_files_only=True, **_dtype_kwarg(dtype))
                 .to(self.device)
                 .eval()
             )
@@ -90,7 +117,9 @@ class Embedder:
         probe = self._encode(["dimension probe"])
         self._dimension = int(probe.shape[1])
         logger.info(
-            "embedder ready", extra={"model": self.model_path, "device": self.device, "dim": self._dimension}
+            "embedder ready",
+            extra={"model": self.model_path, "device": self.device, "dim": self._dimension,
+                   "family": self.family, "pooling": self.pooling},
         )
 
     @property
@@ -101,8 +130,17 @@ class Embedder:
 
     @property
     def fingerprint(self) -> str:
-        """Identity of the vector space, recorded with every index."""
-        return f"{Path(self.model_path).name}:{self.dimension}"
+        """Identity of the vector space, recorded with every index.
+
+        Includes pooling and formatting, because changing either changes the
+        vectors even with the same weights.
+        """
+        import hashlib
+
+        fmt = "\x1f".join((self.query_template, self.passage_template, self.query_instruction))
+        # hashlib, not hash(): str hashes are randomised per process.
+        return (f"{Path(self.model_path).name}:{self.dimension}:{self.pooling}:"
+                f"{hashlib.sha1(fmt.encode('utf-8')).hexdigest()[:8]}")
 
     # -- encoding --------------------------------------------------------
 
@@ -110,14 +148,15 @@ class Embedder:
         if not texts:
             return np.zeros((0, self.dimension), dtype="float32")
         self.load()
+        if self.passage_template != "{text}":
+            texts = [self.passage_template.format(text=t) for t in texts]
         return self._encode(list(texts))
 
     def embed_queries(self, queries: Sequence[str]) -> np.ndarray:
         if not queries:
             return np.zeros((0, self.dimension), dtype="float32")
         self.load()
-        if self.query_instruction:
-            queries = [f"Instruct: {self.query_instruction}\nQuery: {q}" for q in queries]
+        queries = [self.query_template.format(instruction=self.query_instruction, query=q) for q in queries]
         return self._encode(list(queries))
 
     def _encode(self, texts: list[str]) -> np.ndarray:
@@ -138,11 +177,70 @@ class Embedder:
             # Last-token pooling, as Qwen3-Embedding is trained for. Mean
             # pooling over a causal model mixes in positions that never
             # attended to the full sequence.
-            lengths = encoded["attention_mask"].sum(dim=1) - 1
-            pooled = hidden[torch.arange(hidden.size(0), device=hidden.device), lengths]
+            mask = encoded["attention_mask"]
+            if self.pooling == "last":
+                pooled = _last_token_pool(hidden, mask, torch)
+            elif self.pooling == "cls":
+                pooled = hidden[:, 0]
+            else:  # mean over real tokens
+                weights = mask.unsqueeze(-1).to(hidden.dtype)
+                pooled = (hidden * weights).sum(dim=1) / weights.sum(dim=1).clamp(min=1e-9)
             pooled = torch.nn.functional.normalize(pooled, p=2, dim=1)
             out.append(pooled.float().cpu().numpy())
         return np.concatenate(out, axis=0).astype("float32")
+
+
+#: Embedding model families and their documented usage. Detected from the
+#: model's config.json (model_type) and folder name.
+_FAMILY_POOLING = {"qwen": "last", "bge": "cls", "bge_m3": "cls", "e5": "mean", "generic": "mean"}
+_FAMILY_QUERY_TEMPLATE = {
+    "qwen": "Instruct: {instruction}\nQuery: {query}",
+    "bge": "Represent this sentence for searching relevant passages: {query}",
+    "bge_m3": "{query}",  # BGE-M3 needs no query instruction
+    "e5": "query: {query}",
+    "generic": "{query}",
+}
+_FAMILY_PASSAGE_TEMPLATE = {"qwen": "{text}", "bge": "{text}", "bge_m3": "{text}",
+                            "e5": "passage: {text}", "generic": "{text}"}
+
+
+def _detect_family(model_path: str) -> str:
+    import json
+
+    name = Path(model_path).name.lower()
+    model_type = ""
+    try:
+        model_type = json.loads((Path(model_path) / "config.json").read_text(encoding="utf-8")).get(
+            "model_type", "").lower()
+    except Exception:
+        pass
+    if "qwen" in model_type or "qwen" in name or "gte-qwen" in name:
+        return "qwen"
+    if "bge-m3" in name or "bge_m3" in name:
+        return "bge_m3"
+    if "bge" in name:
+        return "bge"
+    import re
+
+    if re.search(r"(^|[-_/])e5([-_]|$)", name):
+        return "e5"
+    return "generic"
+
+
+def _last_token_pool(hidden, attention_mask, torch):
+    """Hidden state of each sequence's final real token, for either padding side.
+
+    Qwen3-Embedding's tokenizer pads on the LEFT. The previous code assumed
+    right padding (index = mask.sum() - 1), which on a left-padded batch picks
+    a token in the middle of every shorter sequence, silently corrupting those
+    embeddings whenever a batch mixes lengths. This mirrors the reference
+    ``last_token_pool`` from the model card.
+    """
+    left_padded = bool((attention_mask[:, -1] == 1).all())
+    if left_padded:
+        return hidden[:, -1]
+    lengths = attention_mask.sum(dim=1) - 1
+    return hidden[torch.arange(hidden.size(0), device=hidden.device), lengths]
 
 
 #: Qwen3-Reranker's prompt, taken from the weights' own chat template. The
@@ -218,14 +316,14 @@ class CrossEncoderReranker:
                 from transformers import AutoModelForCausalLM
 
                 self._model = AutoModelForCausalLM.from_pretrained(
-                    self.model_path, local_files_only=True, dtype=dtype
+                    self.model_path, local_files_only=True, **_dtype_kwarg(dtype)
                 )
             else:
                 self._mode = "sequence_classification"
                 from transformers import AutoModelForSequenceClassification
 
                 self._model = AutoModelForSequenceClassification.from_pretrained(
-                    self.model_path, local_files_only=True, dtype=dtype
+                    self.model_path, local_files_only=True, **_dtype_kwarg(dtype)
                 )
         except ModelLoadError:
             raise

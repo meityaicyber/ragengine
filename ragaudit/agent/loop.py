@@ -76,19 +76,39 @@ class AgentRun:
     ledger: EvidenceLedger
     steps: list[StepRecord] = field(default_factory=list)
     blocks: list[dict[str, Any]] = field(default_factory=list)
+    #: The tool that produced each entry of ``blocks`` (same order), so the
+    #: finalize path can tell a chart the model asked for (show_chart) from
+    #: one a query tool emitted automatically.
+    block_sources: list[str] = field(default_factory=list)
     structured_summary: str = ""
     step_results: dict[int, Any] = field(default_factory=dict)
     exposed_groups: set[ToolGroup] = field(default_factory=set)
     infra_error: str = ""
+    #: What the model said when it stopped calling tools. It is asked to say
+    #: SHOW when its last result, shown as-is, answers the question, and WRITE
+    #: when the answer has to be written (explained, described, combined).
+    final_note: str = ""
+
+    @property
+    def model_chose_show(self) -> bool:
+        """The model judged the tool result itself to be the answer."""
+        note = self.final_note.upper()
+        return "SHOW" in note and "WRITE" not in note
 
     @property
     def only_structured_tool(self) -> str | None:
-        """Name of the single structured tool, if that is all that ran.
+        """Name of the single structured tool, if that is all that ran AND the
+        model chose to show its result as the answer.
 
-        Enables the deterministic shortcut: when one query/count/aggregate tool
-        answered outright, the reply is rendered from templates with no second
-        model call — exact number, no finalize latency.
+        Enables the deterministic shortcut: the reply is rendered from
+        templates with no second model call — exact number, no finalize
+        latency. Whether the result alone answers the question is the model's
+        call (SHOW), not inferred from how many tools ran: "tell me in detail
+        about the medium findings" may need only one query, but it needs a
+        written answer, not the query's list.
         """
+        if not self.model_chose_show:
+            return None
         tool_steps = [s for s in self.steps if s.error is None]
         if len(tool_steps) != 1:
             return None
@@ -97,7 +117,16 @@ class AgentRun:
 
 
 #: Tools whose result can be rendered deterministically without a finalize call.
-_SHORTCUTTABLE = {"count_findings", "aggregate_findings", "query_findings", "distinct_values", "top_values"}
+_SHORTCUTTABLE = {
+    "count_findings", "aggregate_findings", "query_findings", "distinct_values", "top_values",
+    # Corpus-level questions ("how many reports", "what fields exist", "which
+    # reports failed validation"). Previously these tools ran but their result
+    # reached neither a template nor the finalize prompt, so the answer was
+    # always an abstention.
+    "list_reports", "corpus_stats", "describe_schema", "get_report_outline",
+    "report_quality", "find_data_gaps", "compare_reports", "find_repeat_findings",
+    "describe_capabilities", "find_report",
+}
 
 
 class AgentLoop:
@@ -162,6 +191,7 @@ class AgentLoop:
 
             if not completion.tool_calls:
                 run.stop_reason = StopReason.FINISHED
+                run.final_note = (completion.text or "").strip()
                 break
 
             messages.append(_assistant_message(completion))
@@ -213,6 +243,7 @@ class AgentLoop:
                     run.step_results[step] = result.content
                     ctx.step_results[step] = result.content
                     run.blocks.extend(result.blocks)
+                    run.block_sources.extend([call.name] * len(result.blocks))
                     if _is_structured(call.name):
                         run.structured_summary = _summarise_structured(
                             run.structured_summary, call, result.content)
@@ -272,18 +303,34 @@ class AgentLoop:
         # Validate every block before it can reach the API: drop non-finite
         # numbers and structurally bad blocks (one bad block must not sink the
         # rest). The UI still escapes each string on render.
-        from ragaudit.agent.blocks import validate_blocks
+        from ragaudit.agent.blocks import BlockError, validate_block
 
-        run.blocks, block_errors = validate_blocks(run.blocks)
+        sources = run.block_sources + ["?"] * (len(run.blocks) - len(run.block_sources))
+        clean, kept_sources, block_errors = [], [], []
+        for i, (block, source) in enumerate(zip(run.blocks, sources)):
+            try:
+                clean.append(validate_block(block))
+                kept_sources.append(source)
+            except BlockError as exc:
+                block_errors.append(f"block[{i}]: {exc}")
+        run.blocks, run.block_sources = clean, kept_sources
         if block_errors:
             logger.warning("dropped %d malformed block(s): %s", len(block_errors), block_errors)
         return run
 
     def _user_message(self, question: str, ctx: ToolContext) -> str:
         resolved = ctx.resolved or {}
-        if resolved:
-            hints = "; ".join(f"{k}={v}" for k, v in resolved.items())
-            return f"{question}\n\n(resolved context: {hints})"
+        hints = [f"{k}={v}" for k, v in resolved.items()]
+        if getattr(ctx, "default_scope", None):
+            if getattr(ctx, "scope_is_hard", False):
+                hints.append(f"report scope={ctx.default_scope} (selected by the user; "
+                             "every call is limited to it)")
+            else:
+                hints.append(f"default report scope={ctx.default_scope} (applies when a call names "
+                             "no report; pass report_id 'all' or explicit ids if the question "
+                             "needs other reports)")
+        if hints:
+            return f"{question}\n\n(resolved context: {'; '.join(hints)})"
         return question
 
 
@@ -306,12 +353,21 @@ _USE_TOOLSET_SCHEMA = {
     },
 }
 
-_STRUCTURED = {"count_findings", "aggregate_findings", "query_findings", "distinct_values",
-               "top_values", "get_finding", "corpus_stats", "get_report_outline"}
+#: Tools whose results are NOT exact facts for the finalize prompt: search
+#: tools deliver quotable passages through the evidence ledger instead, and
+#: render tools only re-present earlier results.
+_NOT_FACTS = {"search_reports", "keyword_search", "get_finding_text",
+              "show_chart", "show_table", "show_note"}
 
 
 def _is_structured(name: str) -> bool:
-    return name in _STRUCTURED
+    """Every other tool returns exact data computed from the catalogue.
+
+    This used to be a whitelist of eight query tools, so results from
+    list_reports, describe_schema, report_quality and the other navigation /
+    quality / analysis tools were silently dropped before the final answer.
+    """
+    return name not in _NOT_FACTS
 
 
 def _advanced(result, ledger: EvidenceLedger, run: AgentRun) -> bool:
@@ -339,7 +395,9 @@ def _assistant_message(completion: Completion) -> dict[str, Any]:
 
 def _tool_message(call: ToolCall, payload: dict[str, Any]) -> dict[str, Any]:
     import json
-    return {"role": "tool", "name": call.name, "content": json.dumps(payload, default=str)}
+    # Newer Ollama reads ``tool_name``; older builds and proxies use ``name``.
+    return {"role": "tool", "tool_name": call.name, "name": call.name,
+            "content": json.dumps(payload, default=str)}
 
 
 def _tool_payload(result) -> dict[str, Any]:
@@ -349,10 +407,12 @@ def _tool_payload(result) -> dict[str, Any]:
 
 
 def _result_summary(name: str, content: dict[str, Any]) -> str:
+    if "counts" in content or "cross_tab" in content:
+        return f"{name}: {content.get('total', '?')} findings grouped"
     if "count" in content:
         return f"{name}: count={content['count']}"
-    if "total" in content:
-        return f"{name}: {content.get('returned', '?')} of {content['total']}"
+    if "total" in content and "returned" in content:
+        return f"{name}: {content['returned']} of {content['total']}"
     if "passages" in content:
         return f"{name}: {content.get('count', len(content['passages']))} passages"
     if "report_id" in content:
@@ -360,10 +420,29 @@ def _result_summary(name: str, content: dict[str, Any]) -> str:
     return name
 
 
+#: Budget for the exact-results block handed to the finalize call.
+_SUMMARY_LINE_CHARS = 2500
+_SUMMARY_TOTAL_CHARS = 8000
+
+
+def _compact(value: Any, depth: int = 0) -> Any:
+    """Shrink a tool result for the prompt: drop non-quotable excerpts, cap lists."""
+    if isinstance(value, dict):
+        return {k: _compact(v, depth + 1) for k, v in value.items()
+                if not str(k).endswith("_excerpt") and k != "note"}
+    if isinstance(value, list):
+        items = [_compact(v, depth + 1) for v in value[:40]]
+        if len(value) > 40:
+            items.append(f"... {len(value) - 40} more")
+        return items
+    return value
+
+
 def _summarise_structured(existing: str, call: ToolCall, content: dict[str, Any]) -> str:
     import json
-    line = f"{call.name}({json.dumps(call.arguments, sort_keys=True)}) -> " + json.dumps(
-        {k: v for k, v in content.items() if k in
-         ("count", "total", "counts", "cross_tab", "values", "top", "findings")},
-        default=str)[:600]
-    return f"{existing}\n{line}".strip()
+    body = json.dumps(_compact(content), default=str, ensure_ascii=False)
+    if len(body) > _SUMMARY_LINE_CHARS:
+        body = body[:_SUMMARY_LINE_CHARS] + " ...(truncated)"
+    line = f"{call.name}({json.dumps(call.arguments, sort_keys=True)}) -> {body}"
+    combined = f"{existing}\n{line}".strip()
+    return combined[-_SUMMARY_TOTAL_CHARS:] if len(combined) > _SUMMARY_TOTAL_CHARS else combined

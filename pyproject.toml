@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ragaudit"
+version = "0.3.5"
+description = "Agentic, citation-verified question answering over cybersecurity audit reports (local, air-gapped)."
+requires-python = ">=3.10"
+dependencies = [
+  "pydantic>=2.6", "pydantic-settings>=2.2", "numpy>=1.24", "requests>=2.31",
+  "fastapi>=0.110", "uvicorn>=0.27",
+]
+
+[project.optional-dependencies]
+models = ["torch>=2.1", "transformers>=4.51", "huggingface_hub>=0.23"]
+ann = ["faiss-cpu>=1.7"]
+dev = ["pytest>=7", "httpx>=0.25"]
+
+[project.scripts]
+ragaudit = "ragaudit.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["ragaudit*"]
+
+[tool.setuptools.package-data]
+"ragaudit.api" = ["static/*.html"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

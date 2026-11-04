@@ -1,0 +1,150 @@
+{
+  "_meta": {
+    "source_file": "sample_web_portal_vapt.pdf",
+    "pipeline_version": "sample-1.0"
+  },
+  "report_meta": {
+    "report_id": "SAMPLE-WEB-001",
+    "report_title": "Kestrel Citizen Portal Web Application Security Audit",
+    "report_type": "VAPT",
+    "audit_type": "Web Application",
+    "classification": "Confidential",
+    "report_release_date": "2026-03-14",
+    "audit_period": {
+      "from": "2026-02-02",
+      "to": "2026-02-20"
+    }
+  },
+  "document_control": {
+    "prepared_by": "Example Auditors Pvt Ltd (fictional)"
+  },
+  "introduction": "This report presents the results of a grey-box security assessment of the Kestrel Citizen Portal, a fictional application used only as sample data.",
+  "engagement_scope": {
+    "in_scope": [
+      "https://portal.kestrel.example",
+      "https://api.kestrel.example/v2"
+    ],
+    "testing_type": "Authenticated grey-box testing with two user roles"
+  },
+  "methodology": {
+    "standards_referred": [
+      "OWASP ASVS 4.0",
+      "OWASP Top 10 2021",
+      "CERT-In Guidelines"
+    ],
+    "approach": "Reconnaissance, automated scanning, manual verification and exploitation, reporting."
+  },
+  "executive_summary": {
+    "total_findings": 5,
+    "severity_count": {
+      "Critical": 0,
+      "High": 2,
+      "Medium": 2,
+      "Low": 1
+    },
+    "summary_table": [
+      {
+        "finding_id": "OBS-01",
+        "title": "Broken access control on token API",
+        "severity": "High",
+        "status": "Open"
+      },
+      {
+        "finding_id": "OBS-02",
+        "title": "Stored cross-site scripting in feedback form",
+        "severity": "High",
+        "status": "Closed"
+      },
+      {
+        "finding_id": "OBS-03",
+        "title": "Outdated TLS configuration",
+        "severity": "Medium",
+        "status": "Open"
+      },
+      {
+        "finding_id": "OBS-04",
+        "title": "Missing rate limiting on OTP endpoint",
+        "severity": "Medium",
+        "status": "In Progress"
+      },
+      {
+        "finding_id": "OBS-05",
+        "title": "Verbose server banner",
+        "severity": "Low",
+        "status": "Closed"
+      }
+    ]
+  },
+  "detailed_observations": [
+    {
+      "finding_id": "OBS-01",
+      "title": "Broken access control on token API",
+      "severity": "High",
+      "status": "Open",
+      "cvss_score": "8.1",
+      "cwe": "CWE-284",
+      "affected_asset": "https://api.kestrel.example/v2/tokens",
+      "observation_description": "PATCH requests to /v2/tokens/{id}/suspend and /v2/tokens/{id}/activate were accepted without an authentication header. Any network user could change the state of another user's token by supplying its numeric identifier.",
+      "impact": "An unauthenticated attacker can suspend or reactivate any citizen's access token, causing denial of service or restoring revoked access.",
+      "recommendation": "Enforce authentication and per-object authorisation on all token state transitions before release. Reject requests whose session does not own the token.",
+      "proof_of_concept_steps": [
+        "Send PATCH /v2/tokens/1042/suspend without a cookie.",
+        "[IMAGE_PAGE_7_FIG_1]",
+        "Observe HTTP 200 and the token marked suspended.",
+        "[IMAGE_PAGE_7_FIG_2]"
+      ],
+      "new_or_repeat": "New"
+    },
+    {
+      "finding_id": "OBS-02",
+      "title": "Stored cross-site scripting in feedback form",
+      "severity": "High",
+      "status": "Closed",
+      "cvss_score": "7.4",
+      "cwe": "CWE-79",
+      "affected_asset": "https://portal.kestrel.example/feedback",
+      "observation_description": "The feedback message field stored HTML unescaped and rendered it to administrators in the review dashboard. A payload in the message executed script in the administrator's session.",
+      "impact": "Script execution in an administrator session allows account takeover of privileged users.",
+      "recommendation": "Encode all user-supplied output contextually and apply a strict Content Security Policy on the admin dashboard.",
+      "proof_of_concept_steps": [
+        "[IMAGE_PAGE_9_FIG_1]"
+      ],
+      "new_or_repeat": "Repeat"
+    },
+    {
+      "finding_id": "OBS-03",
+      "title": "Outdated TLS configuration",
+      "severity": "Medium",
+      "status": "Open",
+      "cwe": "CWE-327",
+      "affected_asset": "https://portal.kestrel.example",
+      "observation_description": "The web tier negotiated TLS 1.0 and TLS 1.1 and offered CBC-mode cipher suites.",
+      "impact": "Legacy protocol versions expose sessions to known downgrade and padding-oracle attacks.",
+      "recommendation": "Disable TLS 1.0 and 1.1 and restrict cipher suites to AEAD ciphers.",
+      "new_or_repeat": "Repeat"
+    },
+    {
+      "finding_id": "OBS-04",
+      "title": "Missing rate limiting on OTP endpoint",
+      "severity": "Medium",
+      "status": "In Progress",
+      "cwe": "CWE-307",
+      "affected_asset": "https://api.kestrel.example/v2/otp/verify",
+      "observation_description": "The OTP verification endpoint accepted more than 500 attempts per minute for one mobile number without lockout or delay.",
+      "impact": "A six-digit OTP can be brute-forced within its validity window.",
+      "recommendation": "Limit OTP verification attempts per number and per IP, and invalidate the OTP after five failures."
+    },
+    {
+      "finding_id": "OBS-05",
+      "title": "Verbose server banner",
+      "severity": "Low",
+      "status": "Closed",
+      "cwe": "CWE-200",
+      "affected_asset": "https://portal.kestrel.example",
+      "observation_description": "HTTP responses included a Server header disclosing the exact web server version.",
+      "impact": "Version disclosure helps attackers select known exploits.",
+      "recommendation": "Suppress or genericise the Server response header."
+    }
+  ],
+  "conclusion": "Two high-severity issues were identified; the token API access control weakness remains open and should be fixed before the next release."
+}

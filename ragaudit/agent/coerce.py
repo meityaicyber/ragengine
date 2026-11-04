@@ -125,15 +125,24 @@ def scoped_report_ids(ctx: Any, args: dict[str, Any]) -> list[str] | None:
     Note the one exception: an explicit 'all' from the model means the user
     widened on purpose, so the default is not re-imposed.
     """
+    default = getattr(ctx, "default_scope", None)
+    hard = bool(getattr(ctx, "scope_is_hard", False)) and bool(default)
     raw = args.get("report_ids") or args.get("report_id")
     if raw is not None and as_str(raw).lower() not in _ALL_SENTINELS:
         explicit = resolve_report_ids(raw, ctx.catalog)
         if explicit is not None:
+            if hard:
+                # The UI selection is a hard limit: narrow within it, never beyond.
+                return [r for r in explicit if r in default] or list(default)
             return explicit
         # raw was a list of sentinels -> explicit widening
-        return None
+        return list(default) if hard else None
+    if raw is not None and hard:
+        return list(default)          # 'all' cannot widen past the UI selection
+    if raw is not None:
+        return None                   # explicit 'all': the model widened on purpose
     # No scope from the model: apply the context default (may be None = all).
-    return getattr(ctx, "default_scope", None)
+    return default
 
 
 def bounded_limit(value: Any, *, default: int, maximum: int) -> int:

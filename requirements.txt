@@ -1,0 +1,19 @@
+# Core (API, storage, ingest)
+pydantic>=2.6
+pydantic-settings>=2.2
+numpy>=1.24
+requests>=2.31
+fastapi>=0.110
+uvicorn>=0.27
+
+# Models (embedder + reranker). transformers>=4.51 is the first release that knows Qwen3.
+torch>=2.1
+transformers>=4.51
+huggingface_hub>=0.23        # only used by `run.py models` to download weights
+
+# Tests (python run.py selftest)
+pytest>=7
+httpx>=0.25
+
+# Optional: HNSW vector index for very large corpora (RAGAUDIT_RETRIEVAL__BACKEND=faiss)
+# faiss-cpu>=1.7

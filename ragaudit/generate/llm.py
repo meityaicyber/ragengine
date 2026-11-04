@@ -152,6 +152,16 @@ def _parse_tool_calls(message: dict[str, Any]) -> list[ToolCall]:
     return calls
 
 
+#: Ollama model families that understand the "think" switch. Sending it to
+#: other models can make Ollama reject the request, so it is omitted for them.
+_THINKING_FAMILIES = ("qwen3", "qwq", "deepseek-r1", "gpt-oss", "magistral", "cogito")
+
+
+def _supports_think(model_name: str) -> bool:
+    name = model_name.lower()
+    return any(name.startswith(f) for f in _THINKING_FAMILIES)
+
+
 class OllamaClient:
     """Chat/generate client for a local Ollama server."""
 
@@ -164,7 +174,8 @@ class OllamaClient:
         seed: int = 42,
         max_tokens: int = 2048,
         top_p: float = 1.0,
-        think: bool = False,
+        think: bool | None = None,
+        keep_alive: str = "60m",
         context_tokens: int = 16384,
         timeout_s: float = 120.0,
         connect_timeout_s: float = 5.0,
@@ -180,7 +191,8 @@ class OllamaClient:
         self.seed = seed
         self.max_tokens = max_tokens
         self.top_p = top_p
-        self.think = think
+        self.think = think if think is not None else (False if _supports_think(model_name) else None)
+        self.keep_alive = keep_alive
         self.context_tokens = context_tokens
         self.timeout = (connect_timeout_s, timeout_s)
         self.max_retries = max_retries
@@ -216,9 +228,11 @@ class OllamaClient:
             "model": self.model_name,
             "messages": messages,
             "stream": False,
-            "think": self.think,
+            "keep_alive": self.keep_alive,
             "options": self._options(max_tokens),
         }
+        if self.think is not None:
+            payload["think"] = self.think
         if format_schema:
             payload["format"] = format_schema
         if tools:
@@ -253,9 +267,11 @@ class OllamaClient:
             "prompt": prompt,
             "system": system or "",
             "stream": False,
-            "think": self.think,
+            "keep_alive": self.keep_alive,
             "options": self._options(max_tokens),
         }
+        if self.think is not None:
+            payload["think"] = self.think
         if format_schema:
             payload["format"] = format_schema
         data, latency, attempts = self._post("/api/generate", payload, timeout_s=timeout_s)

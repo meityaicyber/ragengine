@@ -57,6 +57,9 @@ class Application:
                 batch_size=cfg.batch_size,
                 max_sequence_tokens=cfg.max_sequence_tokens,
                 query_instruction=cfg.query_instruction,
+                pooling=cfg.pooling,
+                query_template=cfg.query_template,
+                passage_template=cfg.passage_template,
             )
         return self._embedder
 
@@ -75,9 +78,17 @@ class Application:
     def index(self):
         if self._index is None:
             cfg = self.settings.retrieval
+            # Dimension and identity come from the actual embedding model, so
+            # switching models in .env needs no other edit (and a stale index
+            # built with another model is detected instead of mixed).
+            try:
+                dimension, fingerprint = self.embedder.dimension, self.embedder.fingerprint
+            except Exception:
+                dimension, fingerprint = self.settings.embedding.dimension, None
             self._index = open_index(
                 self.settings.index_dir,
-                dimension=self.settings.embedding.dimension,
+                dimension=dimension,
+                fingerprint=fingerprint,
                 backend=cfg.backend,
                 hnsw_m=cfg.hnsw_m,
                 hnsw_ef_construction=cfg.hnsw_ef_construction,
@@ -97,6 +108,7 @@ class Application:
                 max_tokens=cfg.max_tokens,
                 top_p=cfg.top_p,
                 think=cfg.think,
+                keep_alive=cfg.keep_alive,
                 context_tokens=cfg.context_tokens,
                 timeout_s=cfg.timeout_s,
                 connect_timeout_s=cfg.connect_timeout_s,
@@ -121,6 +133,7 @@ class Application:
                 candidates_k=cfg.candidates_k,
                 rrf_k=cfg.rrf_k,
                 use_reranker=self.settings.reranker.enabled,
+                rerank_k=cfg.rerank_k,
             ),
         )
 
@@ -184,6 +197,8 @@ class Application:
             ),
             figure_dir=self.settings.figure_dir,
             fail_on_validation_error=cfg.fail_on_validation_error,
+            checkpoint_dir=self.settings.index_dir,
+            checkpoint_every=cfg.checkpoint_every,
         )
 
     # -- health ----------------------------------------------------------
@@ -215,6 +230,29 @@ class Application:
             and not str(checks.get("embedding_model", "")).startswith("unavailable")
         )
         return {"ready": ready, "checks": checks}
+
+    def warm_up(self) -> dict:
+        """Load every model now so the first real question is not the slow one.
+
+        Loads the embedder and reranker weights and asks Ollama to load the
+        chat model (a one-token generation). Failures are reported, never raised.
+        """
+        import time
+
+        report: dict[str, object] = {}
+        for name, step in (
+            ("embedder", lambda: self.embedder.embed_queries(["warm up"])),
+            ("reranker", lambda: self.reranker.score("warm up", ["warm up"]) if self.reranker else None),
+            ("llm", lambda: self.llm.generate("Reply with OK.", max_tokens=2)),
+        ):
+            started = time.monotonic()
+            try:
+                step()
+                report[name] = f"ready in {time.monotonic() - started:.1f}s"
+            except Exception as exc:  # warm-up is best effort
+                report[name] = f"failed: {exc}"[:300]
+        logger.warning("warm-up: %s", report)
+        return report
 
     def close(self) -> None:
         if self._catalog is not None:

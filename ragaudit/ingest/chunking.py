@@ -46,6 +46,10 @@ FIELD_LABELS = {
     "impact": "Impact",
     "recommendation": "Recommendation",
     "preconditions": "Preconditions",
+    "root_cause": "Root cause",
+    "severity_rationale": "Severity rationale",
+    "regulatory_references": "Regulatory references",
+    "references": "Reference",
 }
 
 
@@ -95,7 +99,7 @@ class FieldAwareChunker:
             ]
 
         out: list[Chunk] = []
-        for name in ("observation", "impact", "recommendation", "preconditions"):
+        for name in FIELD_LABELS:
             value = getattr(finding, name, "")
             if not value.strip():
                 continue
@@ -133,6 +137,15 @@ class FieldAwareChunker:
             bits.append("CWE: " + ", ".join(finding.cwe_ids))
         if finding.cve_ids:
             bits.append("CVE: " + ", ".join(finding.cve_ids))
+        for label, value in (("Impact level", finding.impact_level),
+                             ("Likelihood", finding.likelihood_level),
+                             ("CVSS", f"{finding.cvss_score:g}" if finding.cvss_score is not None else ""),
+                             ("EPSS", finding.epss),
+                             ("Observed", finding.observation_date)):
+            if value:
+                bits.append(f"{label}: {value}")
+        if finding.is_repeat is not None:
+            bits.append("Repeat finding" if finding.is_repeat else "New finding")
         if finding.affected_assets:
             assets = ", ".join(finding.affected_assets[:3])
             if len(finding.affected_assets) > 3:
@@ -199,7 +212,28 @@ class FieldAwareChunker:
         out: list[Chunk] = []
         candidates: list[tuple[str, str, str]] = []
 
+        # Report-level facts (template §1, §2, §4, §8 narrative) so questions
+        # like "who reviewed the report?", "when was it released?" or "what
+        # certifications does the audit team hold?" have citable text.
+        meta = data.get("report_meta") if isinstance(data.get("report_meta"), dict) else {}
+        if meta:
+            candidates.append(("Report details", "report_meta", _render(meta)))
+        summary = data.get("executive_summary")
+        if isinstance(summary, dict):
+            # Only the narrative: the table and counts are answered exactly from
+            # the findings, and summary tables are where extraction goes wrong.
+            narrative = {k: v for k, v in summary.items()
+                         if k not in ("summary_table", "summary_findings", "severity_count",
+                                      "total_findings", "total_vulnerabilities")}
+            text = _render(narrative)
+            if text.strip():
+                candidates.append(("Executive summary", "executive_summary", text))
+        elif isinstance(summary, str) and summary.strip():
+            candidates.append(("Executive summary", "executive_summary", _render(summary)))
+
         for section, path in (
+            ("Document control", "document_control"),
+            ("Audit team", "auditing_team"),
             ("Introduction", "introduction"),
             ("Scope", "engagement_scope"),
             ("Methodology", "methodology"),

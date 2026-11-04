@@ -31,7 +31,24 @@ def _step_content(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
 def _show_chart(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     content = _step_content(ctx, args)
     chart = as_str(args.get("chart") or "bar")
+    cross = content.get("cross_tab")
+    if isinstance(cross, dict) and cross:
+        # Two-level aggregate (e.g. severity by status): render stacked.
+        x = [str(k) for k in cross.keys()]
+        series_names: list[str] = []
+        for row in cross.values():
+            for name in (row or {}):
+                if name not in series_names:
+                    series_names.append(name)
+        series = [{"name": s, "values": [(cross[k] or {}).get(s, 0) for k in cross]}
+                  for s in series_names]
+        block = {"kind": "chart", "chart": "stacked_bar",
+                 "title": as_str(args.get("title")) or "Chart", "x": x, "series": series}
+        return ToolResult(content={"rendered": "chart", "points": len(x)}, blocks=[block])
     counts = content.get("counts") or content.get("values")
+    top = content.get("top")
+    if not counts and isinstance(top, list) and top:
+        counts = {str(t.get("value")): t.get("count", 0) for t in top if isinstance(t, dict)}
     if not isinstance(counts, dict) or not counts:
         raise ToolError("that step has no {label: number} data to chart; "
                         "use aggregate_findings or distinct_values first")

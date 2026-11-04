@@ -1,0 +1,33 @@
+[
+  {
+    "id": "Q1",
+    "text": "How many high-severity findings are still open?",
+    "expected_route": "structured"
+  },
+  {
+    "id": "Q2",
+    "text": "Are all findings closed?",
+    "gold_answer": "No",
+    "expected_route": "structured"
+  },
+  {
+    "id": "Q3",
+    "text": "Which findings cite CWE-284?",
+    "expected_route": "structured"
+  },
+  {
+    "id": "Q4",
+    "text": "What remediation was recommended for the token API issue?",
+    "report_id": "SAMPLE-WEB-001"
+  },
+  {
+    "id": "Q5",
+    "text": "Was the database server patched?",
+    "gold_answer": "Insufficient Evidence"
+  },
+  {
+    "id": "Q6",
+    "text": "What critical issue was found in the payments API?",
+    "report_id": "SAMPLE-API-002"
+  }
+]

@@ -1,5 +1,14 @@
 """Extraction validation gate.
 
+Policy (revised after testing on the real 2-report/4-report extractions):
+BLOCK a report only when the data answers are built from -- the detailed
+findings -- is structurally corrupt (missing, URL/figure/phase-name titles,
+no narrative text). When only the executive summary disagrees with the
+details (totals, severity counts, id sets, a misaligned summary table), WARN:
+the summary is never used to answer, so quarantining a report whose details
+are clean throws away good evidence. 2-report.json is exactly that case: all
+seven detailed findings are clean, only its summary table is misaligned.
+
 Why this exists (D04): PDF-to-JSON extraction fails silently and at scale. In
 the supplied corpus, every row of ``executive_summary.summary_table`` in
 ``2-report.json`` carries a URL in its ``title`` field -- a column
@@ -18,6 +27,11 @@ import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
+
+# One source of truth for field spellings. The validator previously kept its
+# own shorter alias lists, so a report using a spelling the normaliser accepts
+# (e.g. ``observations``) was quarantined as having "no findings array".
+from ragaudit.ingest.normalize import FIELD_ALIASES, FINDINGS_ARRAY_ALIASES, find_findings_array
 
 URL_RE = re.compile(r"https?://", re.IGNORECASE)
 FIGURE_TOKEN_RE = re.compile(r"\[IMAGE_PAGE_\d+_FIG_\d+\]")
@@ -64,17 +78,13 @@ class ValidationResult:
 
 
 def _findings_list(data: dict[str, Any]) -> list[dict[str, Any]]:
-    """Locate the findings array under either known spelling.
+    """Locate the findings array, exactly as the normaliser does.
 
     ``2-report.json`` uses ``detailed_observations``; ``report_structure.json``
     specifies ``vulnerabilities``. Field drift across vendors is the norm, which
     is what the canonical mapping in normalize.py exists to absorb.
     """
-    for key in ("detailed_observations", "vulnerabilities", "findings"):
-        value = data.get(key)
-        if isinstance(value, list):
-            return [v for v in value if isinstance(v, dict)]
-    return []
+    return find_findings_array(data)[1]
 
 
 def _summary_rows(data: dict[str, Any]) -> list[dict[str, Any]]:
@@ -89,7 +99,7 @@ def _summary_rows(data: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _finding_id(row: dict[str, Any]) -> str:
-    for key in ("finding_id", "id", "sr_no", "observation_id"):
+    for key in FIELD_ALIASES["finding_id"]:
         value = row.get(key)
         if value not in (None, ""):
             return str(value).strip()
@@ -97,7 +107,7 @@ def _finding_id(row: dict[str, Any]) -> str:
 
 
 def _title(row: dict[str, Any]) -> str:
-    for key in ("title", "vulnerability_title", "finding_title", "name"):
+    for key in FIELD_ALIASES["title"]:
         value = row.get(key)
         if isinstance(value, str) and value.strip():
             return value.strip()
@@ -116,12 +126,66 @@ def validate_report(data: dict[str, Any], report_id: str) -> ValidationResult:
     _check_id_sets_match(result, summary_rows, findings)
     _check_title_fields(result, summary_rows, findings)
     _check_identifier_fields(result, findings)
+    _check_duplicate_ids(result, findings)
     _check_severity_variation(result, findings)
     _check_titles_are_phrases(result, findings)
     _check_narrative_present(result, findings)
     _check_figures(result, data)
     _check_metadata(result, data)
+    _check_closure_evidence(result, data, findings)
+    _check_distinct_reviewer(result, data)
     return result
+
+
+def _person(value: Any) -> str:
+    if isinstance(value, dict):
+        value = value.get("name", "")
+    return str(value or "").strip().lower()
+
+
+def _check_closure_evidence(result: ValidationResult, data: dict[str, Any], findings: list[dict[str, Any]]) -> None:
+    """Standard Template §9/§11: a Closed or Partially Remediated finding needs
+    a retest entry (Retest & Closure log, or a proof-of-concept entry marked as a
+    retest); without one the closure is treated as unverified. Warning only."""
+    from ragaudit.domain.models import FindingStatus
+
+    appendices = data.get("appendices") if isinstance(data.get("appendices"), dict) else {}
+    logged = {str(r.get("finding_id", "")).strip() for r in appendices.get("retest_closure") or []
+              if isinstance(r, dict)}
+    unverified = []
+    for row in findings:
+        status = FindingStatus.parse(_first_value(row, FIELD_ALIASES["status"]))
+        if status not in (FindingStatus.CLOSED, FindingStatus.PARTIALLY_REMEDIATED):
+            continue
+        fid = _finding_id(row)
+        poc = _first_value(row, FIELD_ALIASES["proof"])
+        retest_poc = isinstance(poc, list) and any(
+            isinstance(e, dict) and str(e.get("is_retest", "")).strip().lower() in ("true", "yes", "1")
+            for e in poc)
+        if fid not in logged and not retest_poc:
+            unverified.append(fid or "?")
+    if unverified:
+        result.add(
+            "closure_verified",
+            Level.WARNING,
+            f"{len(unverified)} finding(s) marked Closed/Partially Remediated have no retest evidence "
+            f"(no Retest & Closure entry or retest proof-of-concept): {unverified[:8]}; "
+            "per the standard template these closures are unverified",
+            "appendices.retest_closure",
+        )
+
+
+def _check_distinct_reviewer(result: ValidationResult, data: dict[str, Any]) -> None:
+    """Standard Template §2: the reviewer must be a different person from the preparer."""
+    control = data.get("document_control") if isinstance(data.get("document_control"), dict) else {}
+    prepared, reviewed = _person(control.get("prepared_by")), _person(control.get("reviewed_by"))
+    if prepared and not reviewed:
+        result.add("reviewer_present", Level.WARNING, "no reviewer named in document control",
+                   "document_control.reviewed_by")
+    elif prepared and reviewed and prepared == reviewed:
+        result.add("reviewer_distinct", Level.WARNING,
+                   "the report was reviewed by the same person who prepared it",
+                   "document_control.reviewed_by")
 
 
 def _check_findings_present(
@@ -131,12 +195,16 @@ def _check_findings_present(
         return
     # An empty findings array is legitimate (a clean audit) but only if the
     # report says so. An absent key is an extraction failure.
-    has_key = any(k in data for k in ("detailed_observations", "vulnerabilities", "findings"))
+    has_key = bool(find_findings_array(data)[0]) or any(k in data for k in FINDINGS_ARRAY_ALIASES)
     if not has_key:
+        top = ", ".join(sorted(str(k) for k in data.keys())[:15])
         result.add(
             "findings_array_present",
             Level.BLOCKING,
-            "no findings array under any known key (detailed_observations / vulnerabilities / findings)",
+            "no findings array under any known key ("
+            + " / ".join(FINDINGS_ARRAY_ALIASES)
+            + f"). Top-level keys present: {top}. If the findings live under another "
+            "key, add it to FINDINGS_ARRAY_ALIASES in ragaudit/ingest/normalize.py",
         )
     else:
         result.add("findings_array_empty", Level.WARNING, "findings array is present but empty")
@@ -150,8 +218,9 @@ def _check_counts_agree(
     if isinstance(declared, int) and declared != n:
         result.add(
             "total_matches_array",
-            Level.BLOCKING,
-            f"executive summary declares {declared} findings but the array holds {n}",
+            Level.WARNING,
+            f"executive summary declares {declared} findings but the detailed list holds {n}; "
+            "counts are taken from the detailed list",
             "executive_summary.total_findings",
         )
 
@@ -161,7 +230,7 @@ def _check_counts_agree(
         if numeric and sum(numeric) != n:
             result.add(
                 "severity_counts_sum",
-                Level.BLOCKING,
+                Level.WARNING,
                 f"severity_count sums to {sum(numeric)} but the array holds {n} findings",
                 "executive_summary.severity_count",
             )
@@ -181,7 +250,7 @@ def _check_id_sets_match(
     if only_summary or only_detail:
         result.add(
             "summary_detail_ids_match",
-            Level.BLOCKING,
+            Level.WARNING,
             f"finding ids disagree; summary-only={only_summary or '[]'}, detail-only={only_detail or '[]'}",
             "executive_summary.summary_table",
         )
@@ -204,7 +273,9 @@ def _check_title_fields(
         ratio = len(urlish) / len(rows)
         # A systematic shift affects most rows; one stray row is a data problem
         # in that row, not a structural extraction failure.
-        level = Level.BLOCKING if ratio >= 0.5 else Level.WARNING
+        # The summary table is never used to answer, so a misaligned summary
+        # is a warning; misaligned DETAIL titles are what gets blocked.
+        level = Level.BLOCKING if ratio >= 0.5 and label == "findings" else Level.WARNING
         result.add(
             "title_not_a_url",
             level,
@@ -229,9 +300,8 @@ def _check_identifier_fields(result: ValidationResult, findings: list[dict[str, 
     for row in findings:
         fid = _finding_id(row) or "?"
         for key, pattern, label in (
-            ("cwe", CWE_RE, "CWE-nnn"),
-            ("cwe_ids", CWE_RE, "CWE-nnn"),
-            ("cve_ids", CVE_RE, "CVE-yyyy-nnnn"),
+            *((k, CWE_RE, "CWE-nnn") for k in FIELD_ALIASES["cwe_ids"]),
+            *((k, CVE_RE, "CVE-yyyy-nnnn") for k in FIELD_ALIASES["cve_ids"]),
         ):
             value = row.get(key)
             if not value:
@@ -245,6 +315,28 @@ def _check_identifier_fields(result: ValidationResult, findings: list[dict[str, 
                     f"finding {fid}: {key} holds {bad[:3]} which do not look like {label}",
                     f"findings[].{key}",
                 )
+
+
+def _check_duplicate_ids(result: ValidationResult, findings: list[dict[str, Any]]) -> None:
+    """Repeated finding ids inside one report.
+
+    Previously this crashed the whole report at insert time (primary-key
+    violation). Normalisation now disambiguates repeats as ``ID#2``; this
+    warning makes the rename visible.
+    """
+    seen: dict[str, int] = {}
+    for row in findings:
+        fid = _finding_id(row)
+        if fid:
+            seen[fid] = seen.get(fid, 0) + 1
+    dupes = sorted(k for k, n in seen.items() if n > 1)
+    if dupes:
+        result.add(
+            "finding_ids_unique",
+            Level.WARNING,
+            f"finding ids repeat within the report: {dupes[:8]}; repeats are stored as ID#2, ID#3 ...",
+            "findings[].finding_id",
+        )
 
 
 #: Methodology phase names that appear as section headings. When these turn up
@@ -273,7 +365,7 @@ def _check_severity_variation(result: ValidationResult, findings: list[dict[str,
     """
     if len(findings) < 5:
         return
-    severities = {str(_first_value(row, ("severity", "risk_rating", "criticality"))).strip().lower() for row in findings}
+    severities = {str(_first_value(row, FIELD_ALIASES["severity"])).strip().lower() for row in findings}
     severities.discard("")
     severities.discard("none")
     if len(severities) == 1:
@@ -333,11 +425,7 @@ def _check_narrative_present(result: ValidationResult, findings: list[dict[str, 
     would silently have no evidence to answer from.
     """
     narrative_keys = (
-        "observation_description",
-        "detailed_observation",
-        "description",
-        "impact",
-        "recommendation",
+        FIELD_ALIASES["observation"] + FIELD_ALIASES["impact"] + FIELD_ALIASES["recommendation"]
     )
     empty = 0
     for row in findings:

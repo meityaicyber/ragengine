@@ -81,6 +81,10 @@ class ToolContext:
     # the UI scope selector and a singular named report ("the Tatva report")
     # across every tool, so evidence never silently leaks from another report.
     default_scope: list[str] | None = None
+    # True when default_scope is the user's UI selection: a hard limit the
+    # model can narrow but never widen. False for a report named in the
+    # question, which the model may widen when the question needs it.
+    scope_is_hard: bool = False
 
 
 @dataclass
